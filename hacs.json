@@ -1,7 +1,7 @@
 {
   "name": "SmartSlydr",
-  "content_in_root": true,
-  "filename": null,
+  "content_in_root": false,
+  "filename": "custom_components/smartslydr",
   "type": "integration",
   "description": "Lychee Things intergration of the SmartSlydr",
   "version": "0.1.0",
