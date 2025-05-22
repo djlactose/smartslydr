@@ -4,4 +4,4 @@ EXPOSE 8123
 
 ENV TZ="America/New_York"
 
-COPY smartslydr /config/custom_components/smartslydr/
+COPY custom_components/smartslydr /config/custom_components/smartslydr/
