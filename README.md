@@ -38,7 +38,7 @@ The **SmartSlydr** custom integration brings full control of your SmartSlydr dev
 ### A) Via HACS
 
 1. In Home Assistant go to **HACS → Integrations → … (top-right) → Custom repositories**  
-2. Add your integration’s GitHub URL with **Category = Integration**  
+2. Set **Category to Integration** and enter the repository URL: https://github.com/djlactose/smartslydr
 3. In **HACS → Integrations**, search for **SmartSlydr** and click **Install**  
 4. Restart Home Assistant
 
