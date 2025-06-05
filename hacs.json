@@ -1,6 +1,5 @@
 {
-  "domain": "smartslydr",
-  "name": "SmartSlydr",
+  "name": "Lychee Things",
   "content_in_root": false,
   "filename": "custom_components/smartslydr",
   "homeassistant": "2025.5.0",
