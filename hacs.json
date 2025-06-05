@@ -8,7 +8,6 @@
   "homeassistant": "2025.5.0",
   "zip_release": false,
   "render_readme": true,
-  "authors": ["Nick Hernandez"],
   "logo": "images/icon.png",
   "logo_dark": "images/dark_icon.png",
   "issue_tracker": "https://github.com/djlactose/smartslydr/issues"
