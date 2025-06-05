@@ -17,3 +17,5 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+      - uses: "actions/checkout@v4"
+      - uses: "home-assistant/actions/hassfest@master"
