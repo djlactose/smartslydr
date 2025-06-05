@@ -1,12 +1,8 @@
 {
-  "name": "SmartSlydr",
+  "name": "Lychee Things",
   "content_in_root": false,
   "filename": "custom_components/smartslydr",
-  "type": "integration",
-  "description": "Lychee Things intergration of the SmartSlydr",
-  "version": "0.1.0",
-  "author": "Nick Hernandez",
   "homeassistant": "2025.5.0",
-  "zip_release": false,
-  "render_readme": true
+  "render_readme": true,
+  "zip_release": false
 }
