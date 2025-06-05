@@ -6,7 +6,5 @@
   "version": "0.1.0",
   "homeassistant": "2025.5.0",
   "zip_release": false,
-  "render_readme": true,
-  "logo": "images/icon.png",
-  "logo_dark": "images/dark_icon.png"
+  "render_readme": true
 }
