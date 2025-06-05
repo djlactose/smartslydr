@@ -1,12 +1,12 @@
 {
   "domain": "smartslydr",
   "name": "Lychee Things",
-  "version": "0.0.1",
-  "documentation": "https://github.com/djlactose/smartslydr",
-  "requirements": ["aiohttp"],
+  "codeowners": ["@djlactose"],
   "config_flow": true,
   "dependencies": [],
-  "codeowners": ["@djlactose"],
+  "documentation": "https://github.com/djlactose/smartslydr",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/djlactose/smartslydr/issues"
+  "issue_tracker": "https://github.com/djlactose/smartslydr/issues",
+  "requirements": ["aiohttp"],
+  "version": "0.0.1"
 }
