@@ -8,6 +8,5 @@
   "zip_release": false,
   "render_readme": true,
   "logo": "images/icon.png",
-  "logo_dark": "images/dark_icon.png",
-  "issue_tracker": "https://github.com/djlactose/smartslydr/issues"
+  "logo_dark": "images/dark_icon.png"
 }
