@@ -5,8 +5,11 @@
   "type": "integration",
   "description": "Lychee Things intergration of the SmartSlydr",
   "version": "0.1.0",
-  "author": "Nick Hernandez",
   "homeassistant": "2025.5.0",
   "zip_release": false,
-  "render_readme": true
+  "render_readme": true,
+  "authors": ["Nick Hernandez"],
+  "logo": "images/icon.png",
+  "logo_dark": "images/dark_icon.png",
+  "issue_tracker": "https://github.com/djlactose/smartslydr/issues"
 }
