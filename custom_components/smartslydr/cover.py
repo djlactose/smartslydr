@@ -2,6 +2,7 @@
 
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+import time
 
 from .const import DOMAIN
 from .api_client import SmartSlydrApiClient
@@ -9,7 +10,7 @@ from .api_client import SmartSlydrApiClient
 COMMAND_POSITION = "position"
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up SmartSlydr covers (doors/blinds) from config entry."""
+    """Set up SmartSlydr covers (doors) from config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     client: SmartSlydrApiClient = data["client"]
     coordinator = data["coordinator"]
@@ -24,7 +25,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class SmartSlydrCover(CoordinatorEntity, CoverEntity):
-    """Representation of a SmartSlydr cover (e.g. door or shade)."""
+    """Representation of a SmartSlydr cover (e.g. door)."""
 
     def __init__(self, device, client, coordinator):
         super().__init__(coordinator)
@@ -40,6 +41,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
             | CoverEntityFeature.STOP
             | CoverEntityFeature.SET_POSITION
         )
+        self._last_set_position = 0  # Add this line
 
     @property
     def device_info(self):
@@ -52,6 +54,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
 
     @property
     def current_cover_position(self) -> int:
+        self._position = self._device.get("position", 0)
         return self._position
 
     @property
@@ -71,6 +74,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         }])
 
     async def async_set_cover_position(self, **kwargs) -> None:
+        now = time.time()
+        if now - getattr(self, "_last_set_position", 0) < 2:
+            return  # Ignore if called within 1 second
+        self._last_set_position = now
+
         pos = kwargs.get("position")
         await self._client.set_command([{
             "device_id": self._device["device_id"],

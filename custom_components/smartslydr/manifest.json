@@ -1,12 +1,12 @@
 {
   "domain": "smartslydr",
   "name": "Lychee Things",
-  "codeowners": ["@djlactose"],
+  "codeowners": ["@djlactose", "@SmartSlydr"],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/djlactose/smartslydr",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/djlactose/smartslydr/issues",
   "requirements": ["aiohttp"],
-  "version": "0.0.2"
+  "version": "0.0.3"
 }
