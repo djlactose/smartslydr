@@ -83,8 +83,7 @@ Once configured, Home Assistant will create:
   - Temperature (`°C` native, converts to `°F` if needed)  
   - Humidity (`%`)  
   - WLAN Signal (`dBm`)  
-  - Sound Level (`dB`)  
-  - WLAN MAC (no unit)  
+
 - **Petpass** switch (toggle open/close):
   - Reads initial state via **Get Status** API  
   - Toggles via **Set Command** API  

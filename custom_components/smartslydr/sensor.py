@@ -14,8 +14,6 @@ _SENSOR_CONFIG = {
     "temperature": {"device_class": SensorDeviceClass.TEMPERATURE,    "unit": "°C"},
     "humidity":    {"device_class": SensorDeviceClass.HUMIDITY,       "unit": "%"},
     "wlansignal":  {"device_class": SensorDeviceClass.SIGNAL_STRENGTH, "unit": "dBm"},
-    "sound":       {"device_class": SensorDeviceClass.SOUND_PRESSURE,  "unit": "dB"},
-    "wlanmac":     {"device_class": None,                             "unit": None},
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
