@@ -72,6 +72,15 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build release zip
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          # HACS expects the zip contents at the root (manifest.json,
+          # __init__.py, etc.) — NOT wrapped in a smartslydr/ folder.
+          cd custom_components/smartslydr
+          zip -r "${GITHUB_WORKSPACE}/smartslydr.zip" .
+          ls -lh "${GITHUB_WORKSPACE}/smartslydr.zip"
+
       - name: Create GitHub release
         if: steps.gate.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
@@ -81,3 +90,4 @@ jobs:
           prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
           target_commitish: ${{ github.sha }}
+          files: smartslydr.zip
