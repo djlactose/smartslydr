@@ -1,55 +1,109 @@
 # config/custom_components/smartslydr/__init__.py
 
 import logging
-import aiohttp
 from datetime import timedelta
 
-import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, DEFAULT_SCAN_INTERVAL, PLATFORMS
-from .api_client import SmartSlydrApiClient
+from .api_client import SmartSlydrApiClient, SmartSlydrApiError
+from .const import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    PLATFORMS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
+DEBUG_BOOLEAN = "input_boolean.smartslydr_debug_mode"
+
+
 async def async_setup(hass: HomeAssistant, config: dict):
     hass.data.setdefault(DOMAIN, {})
+
+    def _refresh_debug_state() -> None:
+        state = hass.states.get(DEBUG_BOOLEAN)
+        hass.data.setdefault(DOMAIN, {})["debug"] = bool(state and state.state == "on")
+
+    @callback
+    def _on_debug_change(event) -> None:
+        _refresh_debug_state()
+        _LOGGER.debug("SmartSlydr debug logging set to %s", hass.data[DOMAIN].get("debug"))
+
+    _refresh_debug_state()
+    async_track_state_change_event(hass, [DEBUG_BOOLEAN], _on_debug_change)
+
     return True
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
 
-    session = aiohttp.ClientSession()
-    client = SmartSlydrApiClient(username, password, session)
+    session = async_get_clientsession(hass)
+    client = SmartSlydrApiClient(username, password, session, hass=hass)
+
+    scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+
+    async def _async_update_data():
+        try:
+            rooms = await client.get_devices()
+        except SmartSlydrApiError as err:
+            raise UpdateFailed(str(err)) from err
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching devices: {err}") from err
+
+        device_ids = [
+            dev.get("device_id")
+            for room in rooms or []
+            for dev in (room.get("device_list") or [])
+            if dev.get("device_id")
+        ]
+
+        petpass_states: dict[str, bool] = {}
+        if device_ids:
+            commands = [{"device_id": did, "command": "petpass"} for did in device_ids]
+            try:
+                statuses = await client.get_status(commands)
+                for st in statuses or []:
+                    did = st.get("device_id")
+                    if did is not None and "petpass" in st:
+                        petpass_states[did] = bool(st.get("petpass"))
+            except Exception as err:
+                _LOGGER.warning("Failed to fetch petpass states: %s", err)
+
+        return {"rooms": rooms, "petpass_states": petpass_states}
 
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
         name=DOMAIN,
-        update_method=client.get_devices,
-        update_interval=timedelta(seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)),
+        update_method=_async_update_data,
+        update_interval=timedelta(seconds=scan_interval),
     )
-    await coordinator.async_refresh()
-    if not coordinator.last_update_success:
-        raise UpdateFailed("Failed to fetch devices")
+
+    # Raises ConfigEntryNotReady on failure so HA retries with backoff
+    # instead of marking the entry permanently failed.
+    await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
         "coordinator": coordinator,
     }
 
-    # NEW: replace deprecated async_add_job/async_forward_entry_setup
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     unload_ok = await hass.config_entries.async_forward_entry_unloads(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
