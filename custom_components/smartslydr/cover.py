@@ -61,10 +61,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class SmartSlydrCover(CoordinatorEntity, CoverEntity):
     """Representation of a SmartSlydr cover (e.g. door or shade)."""
 
-    # SmartSlydr's flagship product is a sliding door. v0.4 of the
-    # public REST API doesn't surface a per-device type field; if a
-    # future schema does, this can be flipped to detection-based.
-    _attr_device_class = CoverDeviceClass.DOOR
+    # SmartSlydr is a sliding door with a 0..100 position. CoverDeviceClass
+    # .DOOR uses a binary swing-door icon that doesn't reflect the lateral
+    # motion or percentage position; CURTAIN matches the actual UX better
+    # (lateral, position-aware, animates with the slider).
+    _attr_device_class = CoverDeviceClass.CURTAIN
     _attr_has_entity_name = True
     _attr_name = None  # primary entity inherits the device name
     _attr_supported_features = (
