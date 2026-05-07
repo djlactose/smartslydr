@@ -1,12 +1,16 @@
 # config/custom_components/smartslydr/__init__.py
 
+import asyncio
 import logging
 from datetime import timedelta
+
+import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -23,6 +27,26 @@ from .const import (
 from .helpers import SmartSlydrCoordinatorData, iter_devices_in_rooms
 
 _LOGGER = logging.getLogger(__name__)
+
+ISSUE_UPSTREAM_UNEXPECTED = "upstream_unexpected_response"
+ISSUE_UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+_TRANSIENT_ISSUES = (ISSUE_UPSTREAM_UNEXPECTED, ISSUE_UPSTREAM_UNAVAILABLE)
+
+
+def _create_issue(hass: HomeAssistant, key: str) -> None:
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        key,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=key,
+    )
+
+
+def _clear_transient_issues(hass: HomeAssistant) -> None:
+    for key in _TRANSIENT_ISSUES:
+        ir.async_delete_issue(hass, DOMAIN, key)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
@@ -47,14 +71,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             raise ConfigEntryAuthFailed(str(err)) from err
         except SmartSlydrApiError as err:
             # SmartSlydrApiError messages are sanitized at construction
-            # (no upstream payload echo), safe to surface.
+            # (no upstream payload echo), safe to surface. Also signal a
+            # repair issue so the user sees a clear "this is server-side"
+            # explanation on the integration page.
+            _create_issue(hass, ISSUE_UPSTREAM_UNEXPECTED)
             raise UpdateFailed(str(err)) from err
+        except (
+            aiohttp.ClientResponseError,
+            aiohttp.ClientConnectorError,
+            asyncio.TimeoutError,
+        ) as err:
+            # Retries already exhausted in the api_client. A persistent
+            # network/5xx warrants a repair card too.
+            _create_issue(hass, ISSUE_UPSTREAM_UNAVAILABLE)
+            _LOGGER.warning("SmartSlydr backend unreachable: %s", err)
+            raise UpdateFailed("Error fetching devices") from err
         except Exception as err:
             # Generic exceptions can carry whatever the underlying lib
             # decided to put in the message - keep it out of HA's UI and
             # let logs carry the detail via "from err".
             _LOGGER.exception("Unexpected error fetching devices")
             raise UpdateFailed("Error fetching devices") from err
+
+        # Successful poll - clear any stale repair cards.
+        _clear_transient_issues(hass)
 
         device_ids = [
             dev["device_id"]
