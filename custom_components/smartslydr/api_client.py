@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
-from .const import DOMAIN
+from .const import DEFAULT_BASE_URL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,13 +47,19 @@ def _raise_if_upstream_error(label: str, data) -> None:
 
 
 class SmartSlydrApiClient:
-    BASE_URL = "https://34yl6ald82.execute-api.us-east-2.amazonaws.com/prod"
-
-    def __init__(self, username: str, password: str, session: aiohttp.ClientSession, hass=None):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        session: aiohttp.ClientSession,
+        hass=None,
+        base_url: str = DEFAULT_BASE_URL,
+    ):
         self._username = username
         self._password = password
         self._session = session
         self._hass = hass
+        self._base_url = base_url.rstrip("/")
         self._access_token: str | None = None
         self._refresh_token_value: str | None = None
         self._token_expires: datetime | None = None
@@ -72,7 +78,7 @@ class SmartSlydrApiClient:
             _LOGGER.debug("[%s] HTTP %s response: %s", label, status, _redact(body))
 
     async def authenticate(self) -> None:
-        url = f"{self.BASE_URL}/auth"
+        url = f"{self._base_url}/auth"
         payload = {"username": self._username, "password": self._password}
         async with self._session.post(url, json=payload) as resp:
             body = await resp.json(content_type=None)
@@ -83,7 +89,7 @@ class SmartSlydrApiClient:
         self._token_expires = datetime.now(timezone.utc) + TOKEN_LIFETIME
 
     async def refresh_token(self) -> None:
-        url = f"{self.BASE_URL}/token"
+        url = f"{self._base_url}/token"
         payload = {"refresh_token": self._refresh_token_value}
         async with self._session.post(url, json=payload) as resp:
             body = await resp.json(content_type=None)
@@ -144,7 +150,7 @@ class SmartSlydrApiClient:
 
         async def _do_request():
             async with self._session.get(
-                f"{self.BASE_URL}/devices", headers=headers
+                f"{self._base_url}/devices", headers=headers
             ) as resp:
                 body = await resp.json(content_type=None)
                 self._log_response("GET_DEVICES", resp.status, body)
@@ -174,7 +180,7 @@ class SmartSlydrApiClient:
 
         async def _do_request():
             async with self._session.post(
-                f"{self.BASE_URL}/operation/get", json=payload, headers=headers
+                f"{self._base_url}/operation/get", json=payload, headers=headers
             ) as resp:
                 body = await resp.json(content_type=None)
                 self._log_response("GET_STATUS", resp.status, body)
@@ -192,7 +198,7 @@ class SmartSlydrApiClient:
         headers = {"Authorization": self._access_token}
         payload = {"setcommands": setcommands}
         async with self._session.post(
-            f"{self.BASE_URL}/operation", json=payload, headers=headers
+            f"{self._base_url}/operation", json=payload, headers=headers
         ) as resp:
             data = await resp.json(content_type=None)
             self._log_response("SET_COMMAND", resp.status, data)

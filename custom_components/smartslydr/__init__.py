@@ -12,8 +12,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api_client import SmartSlydrApiClient, SmartSlydrApiError
 from .const import (
+    CONF_BASE_URL,
     CONF_PASSWORD,
     CONF_USERNAME,
+    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
@@ -48,7 +50,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     password = entry.data[CONF_PASSWORD]
 
     session = async_get_clientsession(hass)
-    client = SmartSlydrApiClient(username, password, session, hass=hass)
+    base_url = entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL)
+    client = SmartSlydrApiClient(username, password, session, hass=hass, base_url=base_url)
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
