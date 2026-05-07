@@ -171,11 +171,12 @@ redacted.
 ### `Unexpected /devices response: { 'errorType': 'TypeError', ... }`
 
 This is the **upstream Lambda backend** crashing — not the integration. The
-integration logs the raw error JSON for diagnosis. Check whether the
-LycheeThings mobile app can still see your devices; if it can, the public
-REST API has regressed and you'll need to report it to LycheeThings (a
-ready-to-send draft is in
-[`BUG_REPORT_LYCHEETHINGS.md`](BUG_REPORT_LYCHEETHINGS.md)).
+integration surfaces a "SmartSlydr backend returned an unexpected response"
+repair card in **Settings → System → Repairs** when this happens, and
+auto-clears it once the API recovers. Check whether the LycheeThings mobile
+app can still see your devices; if it can, the public REST API has regressed
+and is worth reporting to SmartSlydr support. No manual action is needed on
+the HA side — the next successful poll restores normal operation.
 
 ### `auth_failed` when adding the integration
 
