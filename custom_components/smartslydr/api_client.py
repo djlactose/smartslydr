@@ -28,6 +28,23 @@ def _redact(body):
     return body
 
 
+def _raise_if_upstream_error(label: str, data) -> None:
+    """Raise SmartSlydrApiError if the body looks like an upstream Lambda error.
+
+    AWS Lambda sometimes returns 200 with a body shaped like
+    {errorType, errorMessage, trace, ...} when the function threw. The
+    documented success shape never contains those keys.
+    """
+    if isinstance(data, dict) and ("errorType" in data or "errorMessage" in data):
+        _LOGGER.error(
+            "[%s] upstream error: %s / %s",
+            label,
+            data.get("errorType"),
+            data.get("errorMessage"),
+        )
+        raise SmartSlydrApiError(f"SmartSlydr {label} upstream error")
+
+
 class SmartSlydrApiClient:
     BASE_URL = "https://34yl6ald82.execute-api.us-east-2.amazonaws.com/prod"
 
@@ -90,6 +107,8 @@ class SmartSlydrApiClient:
             self._log_response("GET_DEVICES", resp.status, data)
             resp.raise_for_status()
 
+        _raise_if_upstream_error("GET_DEVICES", data)
+
         rooms = data.get("room_lists") if isinstance(data, dict) else None
         if not isinstance(rooms, list):
             # Don't log the full body - it can be large and may contain
@@ -112,6 +131,7 @@ class SmartSlydrApiClient:
             data = await resp.json(content_type=None)
             self._log_response("GET_STATUS", resp.status, data)
             resp.raise_for_status()
+        _raise_if_upstream_error("GET_STATUS", data)
         if not isinstance(data, dict):
             return []
         return data.get("response", [])
@@ -126,6 +146,7 @@ class SmartSlydrApiClient:
             data = await resp.json(content_type=None)
             self._log_response("SET_COMMAND", resp.status, data)
             resp.raise_for_status()
+        _raise_if_upstream_error("SET_COMMAND", data)
         if not isinstance(data, dict):
             return []
         return data.get("response", [])
