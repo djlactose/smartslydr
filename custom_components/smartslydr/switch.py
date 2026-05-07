@@ -1,13 +1,21 @@
 # config/custom_components/smartslydr/switch.py
 
 import logging
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .api_client import SmartSlydrApiClient
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _iter_devices(coordinator_data):
+    for room in (coordinator_data or {}).get("rooms") or []:
+        for dev in room.get("device_list") or []:
+            yield dev
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up SmartSlydr pet pass switches from config entry."""
@@ -15,82 +23,58 @@ async def async_setup_entry(hass, entry, async_add_entities):
     client: SmartSlydrApiClient = data["client"]
     coordinator = data["coordinator"]
 
-    entities = []
-    for room in coordinator.data or []:
-        for dev in room.get("device_list", []) or []:
-            entities.append(
-                SmartSlydrPetpassSwitch(dev, client, coordinator)
-            )
-
+    entities = [
+        SmartSlydrPetpassSwitch(dev, client, coordinator)
+        for dev in _iter_devices(coordinator.data)
+    ]
     async_add_entities(entities)
+
 
 class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
     """Representation of the SmartSlydr pet pass (door) as a toggle switch."""
 
     def __init__(self, device, client, coordinator):
         super().__init__(coordinator)
-        self._device = device
+        self._device_id = device.get("device_id", "")
+        self._device_name = device.get("devicename", self._device_id)
         self._client = client
-        self._state = False
 
-        dev_id = device.get("device_id", "")
-        name = device.get("devicename", dev_id)
-        self._attr_unique_id = f"{dev_id}_petpass"
-        self._attr_name = f"{name} Petpass"
+        self._attr_unique_id = f"{self._device_id}_petpass"
+        self._attr_name = f"{self._device_name} Petpass"
 
-        slots = device.get("petpass", [])
-        self._allowed = [slot.get("name") for slot in slots if isinstance(slot, dict)]
-
-    async def async_added_to_hass(self):
-        """Fetch initial petpass state when entity is added."""
-        await super().async_added_to_hass()
-        await self.async_update()
-        self.async_write_ha_state()
+    def _device_data(self) -> dict:
+        for dev in _iter_devices(self.coordinator.data):
+            if dev.get("device_id") == self._device_id:
+                return dev
+        return {}
 
     @property
     def device_info(self):
-        """Return device registry info for this switch."""
         return {
-            "identifiers": {(DOMAIN, self._device.get("device_id"))},
-            "name": self._device.get("devicename"),
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device_name,
             "manufacturer": "SmartSlydr",
         }
 
     @property
     def is_on(self) -> bool:
-        """Return True if petpass is currently allowed/open."""
-        return bool(self._state)
+        states = (self.coordinator.data or {}).get("petpass_states") or {}
+        return bool(states.get(self._device_id, False))
 
     @property
     def extra_state_attributes(self):
-        """Return additional attributes like allowed pet names."""
-        return {"allowed_pets": self._allowed}
-
-    async def async_update(self):
-        """Fetch current petpass state from the API."""
-        try:
-            response = await self._client.get_status([
-                {"device_id": self._device.get("device_id"), "command": "petpass"}
-            ])
-            for res in response:
-                if "petpass" in res:
-                    self._state = bool(res.get("petpass"))
-                    return
-        except Exception as err:
-            _LOGGER.error("Failed to fetch petpass state for %s: %s", self._device.get("device_id"), err)
+        slots = self._device_data().get("petpass") or []
+        allowed = [slot.get("name") for slot in slots if isinstance(slot, dict)]
+        return {"allowed_pets": allowed}
 
     async def async_turn_on(self, **kwargs):
-        """Enable (open) the petpass door."""
         await self._client.set_command([
-            {"device_id": self._device.get("device_id"), "commands": [{"key": "petpass", "value": 1}]}  # 1 = open
+            {"device_id": self._device_id, "commands": [{"key": "petpass", "value": 1}]}
         ])
-        self._state = True
-        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs):
-        """Disable (close) the petpass door."""
         await self._client.set_command([
-            {"device_id": self._device.get("device_id"), "commands": [{"key": "petpass", "value": 0}]}  # 0 = close
+            {"device_id": self._device_id, "commands": [{"key": "petpass", "value": 0}]}
         ])
-        self._state = False
-        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()

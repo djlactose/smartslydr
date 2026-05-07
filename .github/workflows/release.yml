@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialize releases per branch so concurrent pushes don't race on the
+# beta-number computation. Don't cancel: every push deserves its own tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read base version from manifest
+        id: manifest
+        run: |
+          BASE=$(jq -r .version custom_components/smartslydr/manifest.json)
+          if [ -z "$BASE" ] || [ "$BASE" = "null" ]; then
+            echo "manifest.json is missing a 'version' field" >&2
+            exit 1
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Compute release tag
+        id: version
+        run: |
+          BASE='${{ steps.manifest.outputs.base }}'
+          if [ '${{ github.ref_name }}' = 'main' ]; then
+            TAG="v${BASE}"
+            PRERELEASE=false
+          else
+            git fetch --tags --force --prune
+            HIGHEST=$(git tag -l "v${BASE}-beta.*" \
+              | sed -n "s|^v${BASE}-beta\\.\\([0-9][0-9]*\\)$|\\1|p" \
+              | sort -n | tail -1)
+            NEXT=$(( ${HIGHEST:-0} + 1 ))
+            TAG="v${BASE}-beta.${NEXT}"
+            PRERELEASE=true
+          fi
+          echo "Computed tag: $TAG (prerelease=$PRERELEASE)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to release
+        id: gate
+        run: |
+          TAG='${{ steps.version.outputs.tag }}'
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            if [ '${{ github.ref_name }}' = 'main' ]; then
+              echo "Tag ${TAG} already exists on main — bump manifest.json 'version' to release a new stable build."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              # Beta numbers auto-increment, so this should never happen, but
+              # guard anyway in case a tag was created by hand.
+              echo "Beta tag ${TAG} already exists; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release zip
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          # HACS expects the zip contents at the root (manifest.json,
+          # __init__.py, etc.) — NOT wrapped in a smartslydr/ folder.
+          cd custom_components/smartslydr
+          zip -r "${GITHUB_WORKSPACE}/smartslydr.zip" .
+          ls -lh "${GITHUB_WORKSPACE}/smartslydr.zip"
+
+      - name: Create GitHub release
+        if: steps.gate.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          files: smartslydr.zip

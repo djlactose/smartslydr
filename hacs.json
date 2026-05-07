@@ -1,8 +1,8 @@
 {
   "name": "Lychee Things",
   "content_in_root": false,
-  "filename": "custom_components/smartslydr",
+  "filename": "smartslydr.zip",
   "homeassistant": "2025.5.0",
   "render_readme": true,
-  "zip_release": false
+  "zip_release": true
 }
