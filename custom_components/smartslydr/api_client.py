@@ -1,5 +1,6 @@
 # config/custom_components/smartslydr/api_client.py
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +27,20 @@ _KNOWN_DEVICE_FIELDS = frozenset({
 })
 _KNOWN_TOPLEVEL_FIELDS = frozenset({"statusCode", "room_lists"})
 
+# Endpoint discovery: /devices doesn't return the door-button accessory for
+# at least one real account, which suggests it's served by a different path.
+# Probed once per HA process; any 200 response is logged at WARNING with a
+# body preview. Remove when the schema is fully understood.
+_PROBE_PATHS = (
+    "/buttons",
+    "/button",
+    "/accessories",
+    "/accessory",
+    "/door_buttons",
+    "/doorbuttons",
+    "/extras",
+)
+
 
 def _truncate(value, limit: int = 400):
     """Stringify and truncate so a stray giant value doesn't flood logs."""
@@ -47,6 +62,7 @@ class SmartSlydrApiClient:
         # Tracks which (scope, key) tuples we've already warned about so each
         # unfamiliar field is reported once per HA process, not every refresh.
         self._reported_unknown_fields: set[tuple[str, str]] = set()
+        self._endpoints_probed: bool = False
 
     def _debug_enabled(self) -> bool:
         if not self._hass:
@@ -103,7 +119,35 @@ class SmartSlydrApiClient:
             raise SmartSlydrApiError("SmartSlydr devices API returned unexpected data")
 
         self._report_unknown_devices_fields(data)
+        if not self._endpoints_probed:
+            self._endpoints_probed = True
+            try:
+                await self._probe_extra_endpoints()
+            except Exception as err:  # noqa: BLE001 - diagnostic, never fatal
+                _LOGGER.debug("Endpoint probe failed (non-fatal): %s", err)
         return data["room_lists"]
+
+    async def _probe_extra_endpoints(self) -> None:
+        """One-time GET against speculative paths; log anything that returns 200."""
+        headers = {"Authorization": self._access_token}
+        timeout = aiohttp.ClientTimeout(total=5)
+        summary: list[str] = []
+        for path in _PROBE_PATHS:
+            url = f"{self.BASE_URL}{path}"
+            try:
+                async with self._session.get(url, headers=headers, timeout=timeout) as resp:
+                    body = await resp.text()
+                    summary.append(f"{path}={resp.status}")
+                    if resp.status == 200:
+                        _LOGGER.warning(
+                            "[ENDPOINT_PROBE] %s returned 200, body preview: %s",
+                            path, _truncate(body),
+                        )
+            except asyncio.TimeoutError:
+                summary.append(f"{path}=timeout")
+            except aiohttp.ClientError as err:
+                summary.append(f"{path}=err({type(err).__name__})")
+        _LOGGER.warning("[ENDPOINT_PROBE summary] %s", " ".join(summary))
 
     def _report_unknown_devices_fields(self, data: dict) -> None:
         """Warn once per process for each schema field not in API v0.4."""
