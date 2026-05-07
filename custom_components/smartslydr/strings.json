@@ -1,0 +1,55 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Connect to SmartSlydr",
+                "description": "Sign in with the SmartSlydr (LycheeThings) account you use in the mobile app.",
+                "data": {
+                    "username": "Email",
+                    "password": "Password"
+                }
+            },
+            "reauth_confirm": {
+                "title": "Re-authenticate SmartSlydr",
+                "description": "The integration could not sign in to SmartSlydr with the stored credentials. Please re-enter the password for {username}.",
+                "data": {
+                    "password": "Password"
+                }
+            }
+        },
+        "error": {
+            "auth_failed": "Invalid email or password.",
+            "cannot_connect": "Unable to reach the SmartSlydr API.",
+            "unknown": "Unexpected response from SmartSlydr."
+        },
+        "abort": {
+            "already_configured": "This SmartSlydr account is already configured.",
+            "reauth_successful": "Re-authentication successful."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "SmartSlydr options",
+                "data": {
+                    "scan_interval": "Scan interval (seconds)",
+                    "base_url": "API base URL"
+                },
+                "data_description": {
+                    "scan_interval": "How often to poll the SmartSlydr API. Range: 10–3600 seconds.",
+                    "base_url": "Override only if SmartSlydr publishes a new endpoint or you need a local proxy."
+                }
+            }
+        }
+    },
+    "issues": {
+        "upstream_unexpected_response": {
+            "title": "SmartSlydr backend returned an unexpected response",
+            "description": "The SmartSlydr API returned a payload the integration didn't recognize. This is usually a server-side issue with the LycheeThings backend, not your account or your Home Assistant setup. The integration will recover automatically once the API is restored. If the LycheeThings mobile app can also no longer see your devices, please report the outage to SmartSlydr support."
+        },
+        "upstream_unavailable": {
+            "title": "SmartSlydr backend is unreachable",
+            "description": "The integration could not contact the SmartSlydr API after several retries. Check your internet connection and the AWS service health. Your devices will appear unavailable until the connection is restored; the integration will reconnect automatically."
+        }
+    }
+}
