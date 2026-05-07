@@ -56,9 +56,16 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
+        if "_attr_is_on" in self.__dict__:
+            return bool(self.__dict__["_attr_is_on"])
         data = self.coordinator.data
         states = data.petpass_states if data is not None else {}
         return bool(states.get(self._device_id, False))
+
+    def _handle_coordinator_update(self) -> None:
+        # Coordinator just polled - drop optimistic override.
+        self.__dict__.pop("_attr_is_on", None)
+        super()._handle_coordinator_update()
 
     @property
     def extra_state_attributes(self):
@@ -73,12 +80,18 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         await self._send_petpass(0)
 
     async def _send_petpass(self, value: int) -> None:
+        # Optimistic write before the API round trip.
+        self._attr_is_on = bool(value)
+        self.async_write_ha_state()
         try:
             await self._client.set_command(
                 [{"device_id": self._device_id,
                   "commands": [{"key": "petpass", "value": value}]}]
             )
         except SmartSlydrApiError as err:
+            # Roll back optimistic state since the command didn't take.
+            self.__dict__.pop("_attr_is_on", None)
+            self.async_write_ha_state()
             _LOGGER.warning(
                 "SmartSlydr petpass set failed for %s: %s",
                 self._device_id,

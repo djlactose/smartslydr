@@ -87,11 +87,30 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
 
     @property
     def current_cover_position(self) -> int:
+        # _attr_current_cover_position takes precedence when set as an
+        # instance attribute (optimistic write); fall through to the
+        # last polled value otherwise.
+        if "_attr_current_cover_position" in self.__dict__:
+            return self.__dict__["_attr_current_cover_position"]
         return int(self._device_data().get("position", 0) or 0)
 
     @property
     def is_closed(self) -> bool:
         return self.current_cover_position == 0
+
+    def _clear_optimistic_state(self) -> None:
+        """Drop optimistic overrides so the coordinator value takes over."""
+        for attr in (
+            "_attr_current_cover_position",
+            "_attr_is_opening",
+            "_attr_is_closing",
+        ):
+            self.__dict__.pop(attr, None)
+
+    def _handle_coordinator_update(self) -> None:
+        # Coordinator just polled - real state is now authoritative.
+        self._clear_optimistic_state()
+        super()._handle_coordinator_update()
 
     async def async_open_cover(self, **kwargs) -> None:
         await self.async_set_cover_position(position=100)
@@ -103,6 +122,9 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         # Stop intentionally bypasses SET_POSITION_DEBOUNCE_S - the
         # debounce was added to suppress duplicate set-position fan-out
         # from upstream bridges, not to swallow user-initiated stops.
+        self._attr_is_opening = False
+        self._attr_is_closing = False
+        self.async_write_ha_state()
         await self._send_command(
             [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
         )
@@ -114,10 +136,21 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
             return
         now = time.monotonic()
         if now - self._last_set_position_at < SET_POSITION_DEBOUNCE_S:
-            # Debounce hit: silently drop. Do NOT raise - this is
-            # deliberate suppression, not a failure.
+            # Debounce hit: silently drop. Do NOT raise or write
+            # optimistic state - this is deliberate suppression, not
+            # a failure, and the API call never went out.
             return
         self._last_set_position_at = now
+
+        # Optimistic write so Lovelace responds immediately. Real state
+        # lands on the next (fast-poll) coordinator refresh, which
+        # _handle_coordinator_update clears optimistic overrides for.
+        start = self.current_cover_position
+        self._attr_current_cover_position = pos
+        self._attr_is_opening = pos > start
+        self._attr_is_closing = pos < start
+        self.async_write_ha_state()
+
         await self._send_command(
             [{"key": COMMAND_POSITION, "value": pos}]
         )
