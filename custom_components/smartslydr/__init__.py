@@ -7,11 +7,12 @@ from datetime import timedelta
 import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_client import SmartSlydrApiClient, SmartSlydrApiError, SmartSlydrAuthError
@@ -47,6 +48,42 @@ def _create_issue(hass: HomeAssistant, key: str) -> None:
 def _clear_transient_issues(hass: HomeAssistant) -> None:
     for key in _TRANSIENT_ISSUES:
         ir.async_delete_issue(hass, DOMAIN, key)
+
+
+# Adaptive polling: when a user issues a command, we want to see real
+# state quickly (so optimistic writes get reconciled). Drop the poll
+# interval to FAST_POLL_INTERVAL_S for FAST_POLL_DURATION_S, then revert.
+FAST_POLL_INTERVAL_S = 5
+FAST_POLL_DURATION_S = 30
+
+
+class SmartSlydrCoordinator(DataUpdateCoordinator):
+    """Coordinator that supports a temporary fast-poll window."""
+
+    def __init__(self, hass: HomeAssistant, *, default_interval: timedelta, **kwargs):
+        super().__init__(hass, **kwargs)
+        self._default_interval = default_interval
+        self._restore_handle = None
+
+    @callback
+    def trigger_fast_poll(self) -> None:
+        """Drop to fast polling for FAST_POLL_DURATION_S, then restore.
+
+        Idempotent: a second call inside the window cancels and reschedules
+        the restore (the window slides) rather than nesting timers.
+        """
+        self.update_interval = timedelta(seconds=FAST_POLL_INTERVAL_S)
+        if self._restore_handle is not None:
+            self._restore_handle()
+        self._restore_handle = async_call_later(
+            self.hass, FAST_POLL_DURATION_S, self._restore_default_interval
+        )
+        self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _restore_default_interval(self, _now) -> None:
+        self._restore_handle = None
+        self.update_interval = self._default_interval
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
@@ -122,12 +159,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         return SmartSlydrCoordinatorData(rooms=rooms, petpass_states=petpass_states)
 
-    coordinator = DataUpdateCoordinator(
+    default_interval = timedelta(seconds=scan_interval)
+    coordinator = SmartSlydrCoordinator(
         hass,
-        _LOGGER,
+        logger=_LOGGER,
         name=DOMAIN,
         update_method=_async_update_data,
-        update_interval=timedelta(seconds=scan_interval),
+        update_interval=default_interval,
+        default_interval=default_interval,
     )
 
     # Raises ConfigEntryNotReady on failure so HA retries with backoff
@@ -147,7 +186,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        bucket = hass.data[DOMAIN].pop(entry.entry_id, None)
+        coordinator = bucket.get("coordinator") if bucket else None
+        # Cancel any in-flight fast-poll restore so we don't leak the timer.
+        if isinstance(coordinator, SmartSlydrCoordinator) and coordinator._restore_handle:
+            coordinator._restore_handle()
+            coordinator._restore_handle = None
     return unload_ok
 
 

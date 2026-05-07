@@ -100,4 +100,4 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
             raise HomeAssistantError(
                 f"SmartSlydr petpass command failed: {err}"
             ) from err
-        await self.coordinator.async_request_refresh()
+        self.coordinator.trigger_fast_poll()

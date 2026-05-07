@@ -128,7 +128,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         await self._send_command(
             [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
         )
-        await self.coordinator.async_request_refresh()
+        self.coordinator.trigger_fast_poll()
 
     async def async_set_cover_position(self, **kwargs) -> None:
         pos = kwargs.get("position")
@@ -154,7 +154,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         await self._send_command(
             [{"key": COMMAND_POSITION, "value": pos}]
         )
-        await self.coordinator.async_request_refresh()
+        self.coordinator.trigger_fast_poll()
 
     async def _send_command(self, commands: list[dict]) -> None:
         """Send a set_command for this device, surfacing failures to HA."""
