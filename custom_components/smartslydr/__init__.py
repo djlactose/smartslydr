@@ -60,7 +60,13 @@ def _clear_transient_issues(hass: HomeAssistant) -> None:
 # Adaptive polling: when a user issues a command, we want to see real
 # state quickly (so optimistic writes get reconciled). Drop the poll
 # interval to FAST_POLL_INTERVAL_S for FAST_POLL_DURATION_S, then revert.
-FAST_POLL_INTERVAL_S = 5
+#
+# 5s/30s was the original (12 requests in 30s, since each poll hits
+# /devices and /operation/get). That tripped 429s on the upstream AWS
+# API Gateway when several covers were polled concurrently. 10s/30s
+# gives the local interpolation enough reconciliation samples while
+# halving the request rate during the fast window.
+FAST_POLL_INTERVAL_S = 10
 FAST_POLL_DURATION_S = 30
 
 
@@ -152,17 +158,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         # while /operation/get returns the *current on/off* state of
         # the petpass toggle. Both are needed - the switch's is_on
         # reads this map; allowed_pets reads /devices.petpass.
-        petpass_states: dict[str, bool] = {}
+        #
+        # On a transient failure (429, network blip), retain the previous
+        # poll's petpass_states - clearing them would flip every petpass
+        # switch to OFF in the UI for one cycle, which is a worse lie
+        # than showing slightly stale data.
+        prev = coordinator.data
+        prev_petpass = prev.petpass_states if prev is not None else {}
+        petpass_states: dict[str, bool] = dict(prev_petpass)
         if device_ids:
             commands = [{"device_id": did, "command": "petpass"} for did in device_ids]
             try:
                 statuses = await client.get_status(commands)
+            except Exception as err:
+                _LOGGER.warning(
+                    "Failed to fetch petpass states (keeping last known): %s",
+                    err,
+                )
+            else:
+                # Success: replace with fresh values rather than merging,
+                # so a removed device drops out cleanly.
+                petpass_states = {}
                 for st in statuses or []:
                     did = st.get("device_id")
                     if did is not None and "petpass" in st:
                         petpass_states[did] = bool(st.get("petpass"))
-            except Exception as err:
-                _LOGGER.warning("Failed to fetch petpass states: %s", err)
 
         return SmartSlydrCoordinatorData(rooms=rooms, petpass_states=petpass_states)
 
