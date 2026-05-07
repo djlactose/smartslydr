@@ -14,6 +14,19 @@ _LOGGER = logging.getLogger(__name__)
 # reach the server.
 TOKEN_LIFETIME = timedelta(minutes=29)
 
+# Keys whose values we replace with "***" before logging a response body.
+# Users routinely paste debug logs into bug reports; raw bearer tokens must
+# not leak that way.
+_REDACT_KEYS = frozenset({"access_token", "refresh_token"})
+
+
+def _redact(body):
+    if isinstance(body, dict):
+        return {k: ("***" if k in _REDACT_KEYS else _redact(v)) for k, v in body.items()}
+    if isinstance(body, list):
+        return [_redact(v) for v in body]
+    return body
+
 
 class SmartSlydrApiClient:
     BASE_URL = "https://34yl6ald82.execute-api.us-east-2.amazonaws.com/prod"
@@ -34,7 +47,7 @@ class SmartSlydrApiClient:
 
     def _log_response(self, label: str, status: int, body) -> None:
         if self._debug_enabled():
-            _LOGGER.debug("[%s] HTTP %s response: %s", label, status, body)
+            _LOGGER.debug("[%s] HTTP %s response: %s", label, status, _redact(body))
 
     async def authenticate(self) -> None:
         url = f"{self.BASE_URL}/auth"
