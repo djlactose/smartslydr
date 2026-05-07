@@ -126,27 +126,24 @@ list.
 `cover.stop_cover` sends the documented stop value (`position = 200`) per the
 API spec.
 
-## Debug logging
+## Debug logging and diagnostics
 
-The API client emits per-request debug logs when the helper boolean
-`input_boolean.smartslydr_debug_mode` is `on`. To use it:
+For per-request request/response bodies, click **Enable debug logging**
+on the integration's settings page (**Settings → Devices & Services →
+Lychee Things**). Bearer tokens (`access_token`, `refresh_token`) are
+redacted before they reach the log. Click **Disable debug logging**
+when you're done — HA writes the captured output to a download file
+and reverts the log level.
 
-1. Create the helper: **Settings → Devices & Services → Helpers →
-   Create helper → Toggle**, name it `SmartSlydr Debug Mode`. The entity ID
-   must be exactly `input_boolean.smartslydr_debug_mode`.
-2. Make sure debug-level logs are captured for this integration. Add to
-   `configuration.yaml`:
+For a one-shot point-in-time snapshot without enabling debug logging at
+all, use the **Download diagnostics** button on the same page. It
+returns a JSON file with the current coordinator data and entry
+options; account email, password, tokens, and MAC addresses are
+redacted.
 
-   ```yaml
-   logger:
-     default: warning
-     logs:
-       custom_components.smartslydr: debug
-   ```
-
-3. Toggle the helper on; per-request request/response bodies appear in the
-   HA log. Toggle it off when done — the integration won't log payloads
-   while the helper is off, even if the logger level is debug.
+> Older versions of this integration used a manually-created
+> `input_boolean.smartslydr_debug_mode` helper to gate debug logs. That
+> helper is no longer used and can be deleted.
 
 ## Troubleshooting
 

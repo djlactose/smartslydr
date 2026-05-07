@@ -4,10 +4,9 @@ import logging
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_client import SmartSlydrApiClient, SmartSlydrApiError
@@ -24,26 +23,6 @@ from .helpers import SmartSlydrCoordinatorData, iter_devices_in_rooms
 
 _LOGGER = logging.getLogger(__name__)
 
-DEBUG_BOOLEAN = "input_boolean.smartslydr_debug_mode"
-
-
-async def async_setup(hass: HomeAssistant, config: dict):
-    hass.data.setdefault(DOMAIN, {})
-
-    def _refresh_debug_state() -> None:
-        state = hass.states.get(DEBUG_BOOLEAN)
-        hass.data.setdefault(DOMAIN, {})["debug"] = bool(state and state.state == "on")
-
-    @callback
-    def _on_debug_change(event) -> None:
-        _refresh_debug_state()
-        _LOGGER.debug("SmartSlydr debug logging set to %s", hass.data[DOMAIN].get("debug"))
-
-    _refresh_debug_state()
-    async_track_state_change_event(hass, [DEBUG_BOOLEAN], _on_debug_change)
-
-    return True
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     username = entry.data[CONF_USERNAME]
@@ -51,7 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     session = async_get_clientsession(hass)
     base_url = entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL)
-    client = SmartSlydrApiClient(username, password, session, hass=hass, base_url=base_url)
+    client = SmartSlydrApiClient(username, password, session, base_url=base_url)
+
+    hass.data.setdefault(DOMAIN, {})
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 

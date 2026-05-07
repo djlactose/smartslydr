@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
-from .const import DEFAULT_BASE_URL, DOMAIN
+from .const import DEFAULT_BASE_URL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,13 +52,11 @@ class SmartSlydrApiClient:
         username: str,
         password: str,
         session: aiohttp.ClientSession,
-        hass=None,
         base_url: str = DEFAULT_BASE_URL,
     ):
         self._username = username
         self._password = password
         self._session = session
-        self._hass = hass
         self._base_url = base_url.rstrip("/")
         self._access_token: str | None = None
         self._refresh_token_value: str | None = None
@@ -68,14 +66,11 @@ class SmartSlydrApiClient:
         # Without it, both paths can trigger /token at the same time.
         self._token_lock = asyncio.Lock()
 
-    def _debug_enabled(self) -> bool:
-        if not self._hass:
-            return False
-        return bool(self._hass.data.get(DOMAIN, {}).get("debug", False))
-
     def _log_response(self, label: str, status: int, body) -> None:
-        if self._debug_enabled():
-            _LOGGER.debug("[%s] HTTP %s response: %s", label, status, _redact(body))
+        # _LOGGER.debug only emits when the user clicks "Enable debug
+        # logging" on the integration page (or sets logger: ... debug
+        # in YAML). _redact() strips bearer tokens before they hit logs.
+        _LOGGER.debug("[%s] HTTP %s response: %s", label, status, _redact(body))
 
     async def authenticate(self) -> None:
         url = f"{self._base_url}/auth"
