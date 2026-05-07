@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -143,3 +143,33 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate a config entry to the current schema version."""
+    _LOGGER.debug("Migrating SmartSlydr entry %s from v%s", entry.entry_id, entry.version)
+
+    if entry.version == 1:
+        # v1 -> v2: cover entity unique_id was the bare device_id, which
+        # collides with the device-registry identifier and leaves no room
+        # for future per-device entities. Rewrite to <device_id>_cover.
+        ent_reg = er.async_get(hass)
+        for entity in list(ent_reg.entities.values()):
+            if (
+                entity.config_entry_id == entry.entry_id
+                and entity.domain == "cover"
+                and not entity.unique_id.endswith("_cover")
+            ):
+                new_unique_id = f"{entity.unique_id}_cover"
+                _LOGGER.info(
+                    "Migrating cover %s unique_id %s -> %s",
+                    entity.entity_id,
+                    entity.unique_id,
+                    new_unique_id,
+                )
+                ent_reg.async_update_entity(
+                    entity.entity_id, new_unique_id=new_unique_id
+                )
+        hass.config_entries.async_update_entry(entry, version=2)
+
+    return True

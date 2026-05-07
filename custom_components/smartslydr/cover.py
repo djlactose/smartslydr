@@ -56,7 +56,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._last_set_position_at: float = 0.0
 
         self._attr_name = f"SmartSlydr {self._device_name}"
-        self._attr_unique_id = self._device_id
+        # Suffix the unique_id so it doesn't collide with the device-
+        # registry identifier and leaves room for future per-device
+        # entities (e.g. a future tilt accessory). Pre-v2 covers used
+        # the bare device_id; async_migrate_entry rewrites them.
+        self._attr_unique_id = f"{self._device_id}_cover"
 
     def _device_data(self) -> dict:
         for dev in iter_devices(self.coordinator.data):
