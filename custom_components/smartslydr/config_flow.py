@@ -56,8 +56,8 @@ class SmartSlydrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
         data_schema = vol.Schema({
-            vol.Required(CONF_USERNAME): str,
-            vol.Required(CONF_PASSWORD): str,
+            vol.Required(CONF_USERNAME): vol.All(str, vol.Length(min=1, max=512)),
+            vol.Required(CONF_PASSWORD): vol.All(str, vol.Length(min=1, max=512)),
         })
         return self.async_show_form(
             step_id="user",
@@ -87,6 +87,6 @@ class OptionsFlow(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_SCAN_INTERVAL,
                 default=self._config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-            ): int,
+            ): vol.All(int, vol.Range(min=10, max=3600)),
         })
         return self.async_show_form(step_id="init", data_schema=schema)
