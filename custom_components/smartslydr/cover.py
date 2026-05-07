@@ -49,6 +49,8 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
     # public REST API doesn't surface a per-device type field; if a
     # future schema does, this can be flipped to detection-based.
     _attr_device_class = CoverDeviceClass.DOOR
+    _attr_has_entity_name = True
+    _attr_name = None  # primary entity inherits the device name
     _attr_supported_features = (
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
@@ -63,7 +65,6 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._client = client
         self._last_set_position_at: float = 0.0
 
-        self._attr_name = f"SmartSlydr {self._device_name}"
         # Suffix the unique_id so it doesn't collide with the device-
         # registry identifier and leaves room for future per-device
         # entities (e.g. a future tilt accessory). Pre-v2 covers used

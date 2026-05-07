@@ -29,6 +29,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
     """Representation of the SmartSlydr pet pass (door) as a toggle switch."""
 
+    _attr_has_entity_name = True
+    _attr_name = "Petpass"
+
     def __init__(self, device, client, coordinator):
         super().__init__(coordinator)
         self._device_id = device.get("device_id", "")
@@ -36,7 +39,6 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         self._client = client
 
         self._attr_unique_id = f"{self._device_id}_petpass"
-        self._attr_name = f"{self._device_name} Petpass"
 
     def _device_data(self) -> dict:
         for dev in iter_devices(self.coordinator.data):

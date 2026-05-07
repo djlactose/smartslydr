@@ -10,13 +10,15 @@ from .helpers import iter_devices
 
 _LOGGER = logging.getLogger(__name__)
 
-# Configuration for numeric sensors
+# Configuration for numeric/string sensors keyed off /devices fields.
+# `name` is what HA renders after the device name (because
+# _attr_has_entity_name is True on the entity classes).
 _SENSOR_CONFIG = {
-    "temperature": {"device_class": SensorDeviceClass.TEMPERATURE,    "unit": "°C"},
-    "humidity":    {"device_class": SensorDeviceClass.HUMIDITY,       "unit": "%"},
-    "wlansignal":  {"device_class": SensorDeviceClass.SIGNAL_STRENGTH, "unit": "dBm"},
-    "sound":       {"device_class": SensorDeviceClass.SOUND_PRESSURE,  "unit": "dB"},
-    "wlanmac":     {"device_class": None,                              "unit": None},
+    "temperature": {"device_class": SensorDeviceClass.TEMPERATURE,     "unit": "°C",  "name": "Temperature"},
+    "humidity":    {"device_class": SensorDeviceClass.HUMIDITY,        "unit": "%",   "name": "Humidity"},
+    "wlansignal":  {"device_class": SensorDeviceClass.SIGNAL_STRENGTH, "unit": "dBm", "name": "WLAN signal"},
+    "sound":       {"device_class": SensorDeviceClass.SOUND_PRESSURE,  "unit": "dB",  "name": "Sound"},
+    "wlanmac":     {"device_class": None,                              "unit": None, "name": "WLAN MAC"},
 }
 
 
@@ -36,6 +38,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class _SmartSlydrSensorBase(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
     def __init__(self, device, coordinator):
         super().__init__(coordinator)
         self._device_id = device["device_id"]
@@ -69,7 +73,7 @@ class SmartSlydrSensor(_SmartSlydrSensorBase):
         if cfg["unit"]:
             self._attr_native_unit_of_measurement = cfg["unit"]
 
-        self._attr_name = f"{self._device_name} {sensor_type.capitalize()}"
+        self._attr_name = cfg["name"]
         self._attr_unique_id = f"{self._device_id}_{sensor_type}"
 
     @property
@@ -82,7 +86,7 @@ class SmartSlydrStatusSensor(_SmartSlydrSensorBase):
 
     def __init__(self, device, coordinator):
         super().__init__(device, coordinator)
-        self._attr_name = f"{self._device_name} Status"
+        self._attr_name = "Status"
         self._attr_unique_id = f"{self._device_id}_status"
 
     @property
