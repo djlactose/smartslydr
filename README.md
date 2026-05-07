@@ -5,7 +5,7 @@
 [![Pre-release](https://img.shields.io/github/v/release/djlactose/smartslydr?include_prereleases&label=pre-release)](https://github.com/djlactose/smartslydr/releases)
 [![Downloads](https://img.shields.io/github/downloads/djlactose/smartslydr/total.svg)](https://github.com/djlactose/smartslydr/releases)
 [![Validate](https://github.com/djlactose/smartslydr/actions/workflows/validate.yml/badge.svg)](https://github.com/djlactose/smartslydr/actions/workflows/validate.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/djlactose/smartslydr.svg)](https://github.com/djlactose/smartslydr/stargazers)
 
 Custom integration that brings **SmartSlydr** devices (sold under the
