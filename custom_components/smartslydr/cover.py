@@ -1,13 +1,17 @@
 # config/custom_components/smartslydr/cover.py
 
+import logging
 import time
 
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api_client import SmartSlydrApiClient
+from .api_client import SmartSlydrApiClient, SmartSlydrApiError
 from .const import DOMAIN
 from .helpers import iter_devices
+
+_LOGGER = logging.getLogger(__name__)
 
 COMMAND_POSITION = "position"
 # Sentinel for the position command meaning "stop wherever you are" -
@@ -83,10 +87,12 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         await self.async_set_cover_position(position=0)
 
     async def async_stop_cover(self, **kwargs) -> None:
-        await self._client.set_command([{
-            "device_id": self._device_id,
-            "commands": [{"key": COMMAND_POSITION, "value": STOP_VALUE}],
-        }])
+        # Stop intentionally bypasses SET_POSITION_DEBOUNCE_S - the
+        # debounce was added to suppress duplicate set-position fan-out
+        # from upstream bridges, not to swallow user-initiated stops.
+        await self._send_command(
+            [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
+        )
         await self.coordinator.async_request_refresh()
 
     async def async_set_cover_position(self, **kwargs) -> None:
@@ -95,10 +101,27 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
             return
         now = time.monotonic()
         if now - self._last_set_position_at < SET_POSITION_DEBOUNCE_S:
+            # Debounce hit: silently drop. Do NOT raise - this is
+            # deliberate suppression, not a failure.
             return
         self._last_set_position_at = now
-        await self._client.set_command([{
-            "device_id": self._device_id,
-            "commands": [{"key": COMMAND_POSITION, "value": pos}],
-        }])
+        await self._send_command(
+            [{"key": COMMAND_POSITION, "value": pos}]
+        )
         await self.coordinator.async_request_refresh()
+
+    async def _send_command(self, commands: list[dict]) -> None:
+        """Send a set_command for this device, surfacing failures to HA."""
+        try:
+            await self._client.set_command(
+                [{"device_id": self._device_id, "commands": commands}]
+            )
+        except SmartSlydrApiError as err:
+            _LOGGER.warning(
+                "SmartSlydr set_command failed for %s: %s",
+                self._device_id,
+                err,
+            )
+            raise HomeAssistantError(
+                f"SmartSlydr command failed: {err}"
+            ) from err

@@ -3,9 +3,10 @@
 import logging
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api_client import SmartSlydrApiClient
+from .api_client import SmartSlydrApiClient, SmartSlydrApiError
 from .const import DOMAIN
 from .helpers import iter_devices
 
@@ -64,13 +65,24 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         return {"allowed_pets": allowed}
 
     async def async_turn_on(self, **kwargs):
-        await self._client.set_command([
-            {"device_id": self._device_id, "commands": [{"key": "petpass", "value": 1}]}
-        ])
-        await self.coordinator.async_request_refresh()
+        await self._send_petpass(1)
 
     async def async_turn_off(self, **kwargs):
-        await self._client.set_command([
-            {"device_id": self._device_id, "commands": [{"key": "petpass", "value": 0}]}
-        ])
+        await self._send_petpass(0)
+
+    async def _send_petpass(self, value: int) -> None:
+        try:
+            await self._client.set_command(
+                [{"device_id": self._device_id,
+                  "commands": [{"key": "petpass", "value": value}]}]
+            )
+        except SmartSlydrApiError as err:
+            _LOGGER.warning(
+                "SmartSlydr petpass set failed for %s: %s",
+                self._device_id,
+                err,
+            )
+            raise HomeAssistantError(
+                f"SmartSlydr petpass command failed: {err}"
+            ) from err
         await self.coordinator.async_request_refresh()
