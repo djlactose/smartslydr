@@ -218,6 +218,18 @@ internal endpoint via packet capture. If you're affected, please file an
 upstream feature request — the integration will pick it up automatically
 once the data is in `/devices`.
 
+### Editing the petpass allowed-pet list
+
+The petpass switch toggles the door's pet-pass mode on/off and exposes the
+current allowed-pet list as a read-only `allowed_pets` attribute. **Editing
+that list is not supported** — the public REST API v0.4 only documents the
+`petpass` on/off command via `/operation`, and the same speculative-command
+probing that found the door-button gap also showed the upstream silently
+no-ops unrecognized commands. Without a confirmed write path, shipping a
+"set petpass slots" service would silently fail. For now, edit slots in
+the LycheeThings mobile app; the next coordinator poll will pick up the
+new list and update the `allowed_pets` attribute.
+
 ## Reporting bugs
 
 Open an issue at
