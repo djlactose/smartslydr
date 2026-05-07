@@ -92,6 +92,37 @@ class SmartSlydrApiClient:
         self._access_token = body["access_token"]
         self._token_expires = datetime.now(timezone.utc) + TOKEN_LIFETIME
 
+    async def _request_with_retry(self, label: str, perform):
+        """Retry transient 5xx and connection errors for idempotent calls.
+
+        ``perform`` is a zero-arg callable returning a fresh coroutine each
+        invocation (a coroutine object can only be awaited once). Only
+        called for read-only operations - state-changing calls like
+        set_command must not retry, since an ambiguous failure could
+        actuate the device twice.
+        """
+        delays = (0.5, 1.5)
+        for attempt, delay in enumerate((*delays, None)):
+            try:
+                return await perform()
+            except aiohttp.ClientResponseError as err:
+                if err.status < 500 or delay is None:
+                    raise
+                _LOGGER.debug(
+                    "[%s] HTTP %s on attempt %d, retrying in %ss",
+                    label, err.status, attempt + 1, delay,
+                )
+            except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as err:
+                if delay is None:
+                    raise
+                _LOGGER.debug(
+                    "[%s] %s on attempt %d, retrying in %ss",
+                    label, type(err).__name__, attempt + 1, delay,
+                )
+            await asyncio.sleep(delay)
+        # Unreachable - the loop either returns or raises.
+        raise RuntimeError("retry loop exhausted")
+
     async def _ensure_token(self) -> None:
         async with self._token_lock:
             now = datetime.now(timezone.utc)
@@ -110,10 +141,17 @@ class SmartSlydrApiClient:
     async def get_devices(self):
         await self._ensure_token()
         headers = {"Authorization": self._access_token}
-        async with self._session.get(f"{self.BASE_URL}/devices", headers=headers) as resp:
-            data = await resp.json(content_type=None)
-            self._log_response("GET_DEVICES", resp.status, data)
-            resp.raise_for_status()
+
+        async def _do_request():
+            async with self._session.get(
+                f"{self.BASE_URL}/devices", headers=headers
+            ) as resp:
+                body = await resp.json(content_type=None)
+                self._log_response("GET_DEVICES", resp.status, body)
+                resp.raise_for_status()
+            return body
+
+        data = await self._request_with_retry("GET_DEVICES", _do_request)
 
         _raise_if_upstream_error("GET_DEVICES", data)
 
@@ -133,12 +171,17 @@ class SmartSlydrApiClient:
         await self._ensure_token()
         headers = {"Authorization": self._access_token}
         payload = {"commands": commands}
-        async with self._session.post(
-            f"{self.BASE_URL}/operation/get", json=payload, headers=headers
-        ) as resp:
-            data = await resp.json(content_type=None)
-            self._log_response("GET_STATUS", resp.status, data)
-            resp.raise_for_status()
+
+        async def _do_request():
+            async with self._session.post(
+                f"{self.BASE_URL}/operation/get", json=payload, headers=headers
+            ) as resp:
+                body = await resp.json(content_type=None)
+                self._log_response("GET_STATUS", resp.status, body)
+                resp.raise_for_status()
+            return body
+
+        data = await self._request_with_retry("GET_STATUS", _do_request)
         _raise_if_upstream_error("GET_STATUS", data)
         if not isinstance(data, dict):
             return []
