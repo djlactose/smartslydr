@@ -184,6 +184,22 @@ Entities are created at integration setup. After adding a device in the
 LycheeThings mobile app, **reload the integration**:
 **Settings → Devices & Services → Lychee Things → ⋮ → Reload**.
 
+## Known limitations
+
+### Door-button accessory devices are not supported
+
+The LycheeThings mobile app exposes a "door button" accessory (a separate
+button device that opens the door, behaving like a global petpass toggle).
+The integration does **not** surface this device because it is not returned
+by the public REST API v0.4 — `GET /devices` only returns the primary
+SmartSlydr units. Speculative endpoint and command probing on a real
+account confirmed the door button is served by an internal API the public
+v0.4 spec doesn't document. Support will require either a v0.5+ public
+API extension from LycheeThings, or reverse-engineering the mobile app's
+internal endpoint via packet capture. If you're affected, please file an
+upstream feature request — the integration will pick it up automatically
+once the data is in `/devices`.
+
 ## Reporting bugs
 
 Open an issue at
