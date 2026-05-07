@@ -18,6 +18,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
+from .helpers import iter_devices_in_rooms
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,9 +67,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             raise UpdateFailed("Error fetching devices") from err
 
         device_ids = [
-            dev.get("device_id")
-            for room in rooms or []
-            for dev in (room.get("device_list") or [])
+            dev["device_id"]
+            for dev in iter_devices_in_rooms(rooms)
             if dev.get("device_id")
         ]
 

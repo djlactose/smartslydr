@@ -7,14 +7,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api_client import SmartSlydrApiClient
 from .const import DOMAIN
+from .helpers import iter_devices
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _iter_devices(coordinator_data):
-    for room in (coordinator_data or {}).get("rooms") or []:
-        for dev in room.get("device_list") or []:
-            yield dev
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -25,7 +20,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entities = [
         SmartSlydrPetpassSwitch(dev, client, coordinator)
-        for dev in _iter_devices(coordinator.data)
+        for dev in iter_devices(coordinator.data)
     ]
     async_add_entities(entities)
 
@@ -43,7 +38,7 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_name = f"{self._device_name} Petpass"
 
     def _device_data(self) -> dict:
-        for dev in _iter_devices(self.coordinator.data):
+        for dev in iter_devices(self.coordinator.data):
             if dev.get("device_id") == self._device_id:
                 return dev
         return {}

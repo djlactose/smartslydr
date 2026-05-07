@@ -6,6 +6,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .helpers import iter_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,19 +20,13 @@ _SENSOR_CONFIG = {
 }
 
 
-def _iter_devices(coordinator_data):
-    for room in (coordinator_data or {}).get("rooms") or []:
-        for dev in room.get("device_list") or []:
-            yield dev
-
-
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up SmartSlydr sensors from config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
 
     entities = []
-    for dev in _iter_devices(coordinator.data):
+    for dev in iter_devices(coordinator.data):
         for cmd in _SENSOR_CONFIG:
             if cmd in dev:
                 entities.append(SmartSlydrSensor(dev, coordinator, cmd))
@@ -47,7 +42,7 @@ class _SmartSlydrSensorBase(CoordinatorEntity, SensorEntity):
         self._device_name = device.get("devicename", self._device_id)
 
     def _device_data(self) -> dict:
-        for dev in _iter_devices(self.coordinator.data):
+        for dev in iter_devices(self.coordinator.data):
             if dev.get("device_id") == self._device_id:
                 return dev
         return {}

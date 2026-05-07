@@ -7,6 +7,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api_client import SmartSlydrApiClient
 from .const import DOMAIN
+from .helpers import iter_devices
 
 COMMAND_POSITION = "position"
 # Sentinel for the position command meaning "stop wherever you are" -
@@ -19,12 +20,6 @@ STOP_VALUE = 200
 SET_POSITION_DEBOUNCE_S = 2.0
 
 
-def _iter_devices(coordinator_data):
-    for room in (coordinator_data or {}).get("rooms") or []:
-        for dev in room.get("device_list") or []:
-            yield dev
-
-
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up SmartSlydr covers (doors/blinds) from config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -33,7 +28,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entities = [
         SmartSlydrCover(dev, client, coordinator)
-        for dev in _iter_devices(coordinator.data)
+        for dev in iter_devices(coordinator.data)
         if "position" in dev
     ]
     async_add_entities(entities)
@@ -60,7 +55,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._attr_unique_id = self._device_id
 
     def _device_data(self) -> dict:
-        for dev in _iter_devices(self.coordinator.data):
+        for dev in iter_devices(self.coordinator.data):
             if dev.get("device_id") == self._device_id:
                 return dev
         return {}
