@@ -78,7 +78,18 @@ class SmartSlydrApiClient:
         async with self._session.post(url, json=payload) as resp:
             body = await resp.json(content_type=None)
             self._log_response("AUTH", resp.status, body)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except aiohttp.ClientResponseError as err:
+                if err.status in (400, 401, 403):
+                    raise SmartSlydrAuthError(
+                        "SmartSlydr rejected the stored credentials"
+                    ) from err
+                raise
+        if not isinstance(body, dict) or "access_token" not in body:
+            raise SmartSlydrApiError(
+                "SmartSlydr auth response missing access_token"
+            )
         self._access_token = body["access_token"]
         self._refresh_token_value = body.get("refresh_token")
         self._token_expires = datetime.now(timezone.utc) + TOKEN_LIFETIME
@@ -206,3 +217,11 @@ class SmartSlydrApiClient:
 
 class SmartSlydrApiError(Exception):
     """Raised when the SmartSlydr API returns an unexpected payload."""
+
+
+class SmartSlydrAuthError(SmartSlydrApiError):
+    """Raised when SmartSlydr rejects the stored credentials.
+
+    Distinguished from a generic API error so the coordinator can map it
+    to ConfigEntryAuthFailed and trigger HA's reauth flow.
+    """

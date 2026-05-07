@@ -6,10 +6,11 @@ from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api_client import SmartSlydrApiClient, SmartSlydrApiError
+from .api_client import SmartSlydrApiClient, SmartSlydrApiError, SmartSlydrAuthError
 from .const import (
     CONF_BASE_URL,
     CONF_PASSWORD,
@@ -39,6 +40,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     async def _async_update_data():
         try:
             rooms = await client.get_devices()
+        except SmartSlydrAuthError as err:
+            # Triggers HA's reauth flow (a "Repair credentials" card on
+            # the integration page). User re-enters the password without
+            # losing entity history.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except SmartSlydrApiError as err:
             # SmartSlydrApiError messages are sanitized at construction
             # (no upstream payload echo), safe to surface.
