@@ -1,0 +1,21 @@
+recalibrate_cover:
+  name: Recalibrate cover move duration
+  description: >
+    Clear the auto-calibrated move duration for one or more SmartSlydr
+    cover entities. The next full open or close traversal will measure
+    a new duration. Manual overrides set in the integration's options
+    are preserved.
+  target:
+    entity:
+      domain: cover
+      integration: smartslydr
+  fields:
+    entity_id:
+      name: Cover
+      description: Cover entity (or entities) to recalibrate.
+      required: true
+      selector:
+        entity:
+          domain: cover
+          integration: smartslydr
+          multiple: true

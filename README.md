@@ -126,6 +126,27 @@ list.
 `cover.stop_cover` sends the documented stop value (`position = 200`) per the
 API spec.
 
+### Cover animation and calibration
+
+The cover entity animates smoothly while a move is in flight. Because the
+SmartSlydr REST API doesn't push the door's physical position as it
+moves, the integration interpolates locally based on a per-device
+*move duration* — how long a full open or close takes — and reconciles
+against the polled position every few seconds (drift > 10 % triggers a
+snap to the polled value).
+
+- **Auto-calibration**: the first full open or close (0 → 100 or 100 → 0)
+  measures the actual elapsed time and stores it as the calibrated
+  duration. Subsequent moves animate at that rate.
+- **Until calibration completes**, animation uses a 10-second default.
+- **Recalibration**: call the `smartslydr.recalibrate_cover` service from
+  Developer Tools → Services (or wire it to a button) to clear the
+  calibrated value. The next full traversal recalibrates.
+- **Manual override**: an advanced user can put
+  `move_duration_<device_id>: <seconds>` directly into the entry's
+  options (via HA's `core.config_entries` storage); the override beats
+  calibration and the default. There is no UI for this today.
+
 ## Debug logging and diagnostics
 
 For per-request request/response bodies, click **Enable debug logging**

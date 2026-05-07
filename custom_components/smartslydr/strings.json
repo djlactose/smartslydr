@@ -51,5 +51,17 @@
             "title": "SmartSlydr backend is unreachable",
             "description": "The integration could not contact the SmartSlydr API after several retries. Check your internet connection and the AWS service health. Your devices will appear unavailable until the connection is restored; the integration will reconnect automatically."
         }
+    },
+    "services": {
+        "recalibrate_cover": {
+            "name": "Recalibrate cover move duration",
+            "description": "Clear the auto-calibrated move duration for one or more SmartSlydr cover entities. The next full open or close traversal will measure a new duration. Manual overrides set in the integration's options are preserved.",
+            "fields": {
+                "entity_id": {
+                    "name": "Cover",
+                    "description": "Cover entity (or entities) to recalibrate."
+                }
+            }
+        }
     }
 }

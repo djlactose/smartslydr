@@ -5,18 +5,24 @@ import logging
 from datetime import timedelta
 
 import aiohttp
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers import entity_registry as er, issue_registry as ir
+from homeassistant.helpers import (
+    config_validation as cv,
+    entity_registry as er,
+    issue_registry as ir,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_client import SmartSlydrApiClient, SmartSlydrApiError, SmartSlydrAuthError
 from .const import (
+    CALIBRATED_DURATION_OPTION_PREFIX,
     CONF_BASE_URL,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -24,6 +30,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
+    SERVICE_RECALIBRATE_COVER,
 )
 from .helpers import SmartSlydrCoordinatorData, iter_devices_in_rooms
 
@@ -166,6 +173,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         name=DOMAIN,
         update_method=_async_update_data,
         update_interval=default_interval,
+        config_entry=entry,
         default_interval=default_interval,
     )
 
@@ -180,7 +188,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    _async_register_services(hass)
+
     return True
+
+
+_RECALIBRATE_SCHEMA = vol.Schema({
+    vol.Required("entity_id"): cv.entity_ids,
+})
+
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register integration-level services. Idempotent across entries."""
+    if hass.services.has_service(DOMAIN, SERVICE_RECALIBRATE_COVER):
+        return
+
+    async def _handle_recalibrate(call: ServiceCall) -> None:
+        ent_reg = er.async_get(hass)
+        for entity_id in call.data["entity_id"]:
+            entity = ent_reg.async_get(entity_id)
+            if entity is None or entity.domain != "cover":
+                continue
+            if not entity.unique_id.endswith("_cover"):
+                continue
+            device_id = entity.unique_id[: -len("_cover")]
+            target_entry = hass.config_entries.async_get_entry(entity.config_entry_id)
+            if target_entry is None:
+                continue
+            key = f"{CALIBRATED_DURATION_OPTION_PREFIX}{device_id}"
+            if key not in target_entry.options:
+                continue
+            new_options = {k: v for k, v in target_entry.options.items() if k != key}
+            hass.config_entries.async_update_entry(target_entry, options=new_options)
+            _LOGGER.info(
+                "Cleared calibrated move duration for %s (%s)",
+                entity_id,
+                device_id,
+            )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RECALIBRATE_COVER,
+        _handle_recalibrate,
+        schema=_RECALIBRATE_SCHEMA,
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):

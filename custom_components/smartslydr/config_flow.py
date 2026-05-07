@@ -125,7 +125,12 @@ class OptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Merge into existing options so we don't wipe internal-only
+            # keys (e.g. calibrated_move_duration_<id>) that the form
+            # doesn't expose.
+            merged = dict(self._config_entry.options)
+            merged.update(user_input)
+            return self.async_create_entry(title="", data=merged)
 
         schema = vol.Schema({
             vol.Optional(
