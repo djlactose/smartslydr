@@ -28,10 +28,10 @@ _KNOWN_DEVICE_FIELDS = frozenset({
 _KNOWN_TOPLEVEL_FIELDS = frozenset({"statusCode", "room_lists"})
 
 # Endpoint discovery: /devices doesn't return the door-button accessory for
-# at least one real account, which suggests it's served by a different path.
-# Probed once per HA process; any 200 response is logged at WARNING with a
-# body preview. Remove when the schema is fully understood.
-_PROBE_PATHS = (
+# at least one real account, which suggests it's served by a different path
+# OR by an undocumented command on /operation/get. We probe both, once per
+# HA process. Remove when the schema is fully understood.
+_PROBE_GET_PATHS = (
     "/buttons",
     "/button",
     "/accessories",
@@ -39,6 +39,38 @@ _PROBE_PATHS = (
     "/door_buttons",
     "/doorbuttons",
     "/extras",
+    "/items",
+    "/things",
+    "/petpass",
+    "/petpasses",
+    "/rooms",
+    "/me",
+    "/account",
+    "/account/devices",
+    "/users/devices",
+    "/v2/devices",
+    "/v1/devices",
+)
+
+# Per-device sub-paths probed against the FIRST device_id from /devices.
+_PROBE_DEVICE_SUBPATHS = (
+    "/devices/{id}/buttons",
+    "/devices/{id}/accessories",
+    "/devices/{id}/petpass",
+    "/devices/{id}",
+)
+
+# Speculative /operation/get command names; the door button might be just an
+# undocumented command on the existing device.
+_PROBE_GET_STATUS_COMMANDS = (
+    "doorbutton",
+    "door_button",
+    "button",
+    "buttons",
+    "manual",
+    "lock",
+    "unlock",
+    "open",
 )
 
 
@@ -122,31 +154,76 @@ class SmartSlydrApiClient:
         if not self._endpoints_probed:
             self._endpoints_probed = True
             try:
-                await self._probe_extra_endpoints()
+                sample_device_id = self._first_device_id(data)
+                await self._probe_extra_endpoints(sample_device_id)
             except Exception as err:  # noqa: BLE001 - diagnostic, never fatal
                 _LOGGER.debug("Endpoint probe failed (non-fatal): %s", err)
         return data["room_lists"]
 
-    async def _probe_extra_endpoints(self) -> None:
-        """One-time GET against speculative paths; log anything that returns 200."""
-        headers = {"Authorization": self._access_token}
+    @staticmethod
+    def _first_device_id(data: dict) -> str | None:
+        for room in data.get("room_lists") or []:
+            for dev in (room.get("device_list") or []):
+                did = dev.get("device_id")
+                if did:
+                    return did
+        return None
+
+    async def _probe_extra_endpoints(self, sample_device_id: str | None) -> None:
+        """One-time speculative probes — paths and commands not in v0.4 spec."""
         timeout = aiohttp.ClientTimeout(total=5)
+        auth_headers = {"Authorization": self._access_token}
+        json_headers = {**auth_headers, "Content-Type": "application/json"}
+
         summary: list[str] = []
-        for path in _PROBE_PATHS:
-            url = f"{self.BASE_URL}{path}"
+
+        async def _try_get(label: str, url: str) -> None:
             try:
-                async with self._session.get(url, headers=headers, timeout=timeout) as resp:
+                async with self._session.get(url, headers=auth_headers, timeout=timeout) as resp:
                     body = await resp.text()
-                    summary.append(f"{path}={resp.status}")
-                    if resp.status == 200:
-                        _LOGGER.warning(
-                            "[ENDPOINT_PROBE] %s returned 200, body preview: %s",
-                            path, _truncate(body),
-                        )
+                    summary.append(f"{label}={resp.status}")
+                    _LOGGER.warning(
+                        "[ENDPOINT_PROBE] GET %s -> %s body=%s",
+                        label, resp.status, _truncate(body, 200),
+                    )
             except asyncio.TimeoutError:
-                summary.append(f"{path}=timeout")
+                summary.append(f"{label}=timeout")
             except aiohttp.ClientError as err:
-                summary.append(f"{path}=err({type(err).__name__})")
+                summary.append(f"{label}=err({type(err).__name__})")
+
+        async def _try_post(label: str, url: str, payload: dict) -> None:
+            try:
+                async with self._session.post(url, json=payload, headers=json_headers, timeout=timeout) as resp:
+                    body = await resp.text()
+                    summary.append(f"{label}={resp.status}")
+                    _LOGGER.warning(
+                        "[ENDPOINT_PROBE] POST %s -> %s body=%s",
+                        label, resp.status, _truncate(body, 200),
+                    )
+            except asyncio.TimeoutError:
+                summary.append(f"{label}=timeout")
+            except aiohttp.ClientError as err:
+                summary.append(f"{label}=err({type(err).__name__})")
+
+        # 1. Speculative top-level paths
+        for path in _PROBE_GET_PATHS:
+            await _try_get(path, f"{self.BASE_URL}{path}")
+
+        # 2. Device-scoped sub-paths (only if we have a known device_id)
+        if sample_device_id:
+            for tmpl in _PROBE_DEVICE_SUBPATHS:
+                path = tmpl.replace("{id}", sample_device_id)
+                await _try_get(path, f"{self.BASE_URL}{path}")
+
+            # 3. Undocumented /operation/get commands on the existing device
+            for cmd in _PROBE_GET_STATUS_COMMANDS:
+                payload = {"commands": [{"device_id": sample_device_id, "command": cmd}]}
+                await _try_post(
+                    f"/operation/get?command={cmd}",
+                    f"{self.BASE_URL}/operation/get",
+                    payload,
+                )
+
         _LOGGER.warning("[ENDPOINT_PROBE summary] %s", " ".join(summary))
 
     def _report_unknown_devices_fields(self, data: dict) -> None:
