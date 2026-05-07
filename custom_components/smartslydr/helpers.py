@@ -1,10 +1,27 @@
 # config/custom_components/smartslydr/helpers.py
-"""Shared utilities for the SmartSlydr integration."""
+"""Shared utilities and types for the SmartSlydr integration."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass(frozen=True)
+class SmartSlydrCoordinatorData:
+    """Snapshot of one coordinator update.
+
+    ``rooms`` is the raw ``room_lists`` list returned by ``/devices``;
+    individual rooms may still be malformed (a non-dict slips through),
+    which is why entity platforms iterate via ``iter_devices``.
+
+    ``petpass_states`` maps device_id -> on/off, sourced from a
+    ``/operation/get`` call alongside the ``/devices`` poll.
+    """
+
+    rooms: list = field(default_factory=list)
+    petpass_states: dict[str, bool] = field(default_factory=dict)
 
 
 def iter_devices_in_rooms(rooms: Any) -> Iterator[dict]:
@@ -27,13 +44,15 @@ def iter_devices_in_rooms(rooms: Any) -> Iterator[dict]:
                 yield dev
 
 
-def iter_devices(coordinator_data: Any) -> Iterator[dict]:
-    """Yield each device dict from a coordinator-data payload, defensively.
+def iter_devices(data: Any) -> Iterator[dict]:
+    """Yield each device dict from coordinator data, defensively.
 
-    Convenience wrapper for entity platforms that operate on
-    ``coordinator.data`` (a dict). Internal call sites that already have
-    the rooms list directly should use ``iter_devices_in_rooms``.
+    Accepts either a ``SmartSlydrCoordinatorData`` instance (the modern
+    shape) or ``None`` (during the brief window before the first
+    successful refresh). Internal call sites that already have the
+    rooms list directly should use ``iter_devices_in_rooms``.
     """
-    if not isinstance(coordinator_data, dict):
+    if data is None:
         return
-    yield from iter_devices_in_rooms(coordinator_data.get("rooms"))
+    rooms = getattr(data, "rooms", None)
+    yield from iter_devices_in_rooms(rooms)

@@ -53,7 +53,8 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        states = (self.coordinator.data or {}).get("petpass_states") or {}
+        data = self.coordinator.data
+        states = data.petpass_states if data is not None else {}
         return bool(states.get(self._device_id, False))
 
     @property

@@ -18,7 +18,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .helpers import iter_devices_in_rooms
+from .helpers import SmartSlydrCoordinatorData, iter_devices_in_rooms
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             except Exception as err:
                 _LOGGER.warning("Failed to fetch petpass states: %s", err)
 
-        return {"rooms": rooms, "petpass_states": petpass_states}
+        return SmartSlydrCoordinatorData(rooms=rooms, petpass_states=petpass_states)
 
     coordinator = DataUpdateCoordinator(
         hass,
