@@ -1,5 +1,6 @@
 # config/custom_components/smartslydr/api_client.py
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -56,6 +57,10 @@ class SmartSlydrApiClient:
         self._access_token: str | None = None
         self._refresh_token_value: str | None = None
         self._token_expires: datetime | None = None
+        # Serializes _ensure_token across concurrent callers (coordinator
+        # poll firing while a user-initiated cover command is in flight).
+        # Without it, both paths can trigger /token at the same time.
+        self._token_lock = asyncio.Lock()
 
     def _debug_enabled(self) -> bool:
         if not self._hass:
@@ -88,16 +93,19 @@ class SmartSlydrApiClient:
         self._token_expires = datetime.now(timezone.utc) + TOKEN_LIFETIME
 
     async def _ensure_token(self) -> None:
-        now = datetime.now(timezone.utc)
-        if not self._access_token or self._token_expires is None or now >= self._token_expires:
-            if self._refresh_token_value:
-                try:
-                    await self.refresh_token()
-                    return
-                except aiohttp.ClientResponseError as err:
-                    _LOGGER.debug("Refresh token rejected (%s); re-authenticating", err.status)
-                    self._refresh_token_value = None
-            await self.authenticate()
+        async with self._token_lock:
+            now = datetime.now(timezone.utc)
+            # Re-check inside the lock - another waiter may have just
+            # refreshed; if it did, the staleness check is now false.
+            if not self._access_token or self._token_expires is None or now >= self._token_expires:
+                if self._refresh_token_value:
+                    try:
+                        await self.refresh_token()
+                        return
+                    except aiohttp.ClientResponseError as err:
+                        _LOGGER.debug("Refresh token rejected (%s); re-authenticating", err.status)
+                        self._refresh_token_value = None
+                await self.authenticate()
 
     async def get_devices(self):
         await self._ensure_token()
