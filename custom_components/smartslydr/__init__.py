@@ -102,6 +102,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             if dev.get("device_id")
         ]
 
+        # /devices.petpass and /operation/get?command=petpass look like
+        # they overlap, but they're different: /devices.petpass is the
+        # *configuration* (the list of allowed-pet slot entries),
+        # while /operation/get returns the *current on/off* state of
+        # the petpass toggle. Both are needed - the switch's is_on
+        # reads this map; allowed_pets reads /devices.petpass.
         petpass_states: dict[str, bool] = {}
         if device_ids:
             commands = [{"device_id": did, "command": "petpass"} for did in device_ids]
