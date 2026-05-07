@@ -25,7 +25,11 @@ class SmartSlydrCoordinatorData:
 
 
 _TRUTHY_STRINGS = frozenset({"true", "1", "on", "yes", "enabled"})
-_FALSY_STRINGS = frozenset({"false", "0", "off", "no", "disabled", ""})
+# "ff" is what the SmartSlydr backend actually returns for the off
+# state (observed in the wild on /operation/get) - looks like it's a
+# truncation of "off". Keep "off" in here too in case it varies by
+# firmware version.
+_FALSY_STRINGS = frozenset({"false", "0", "off", "ff", "no", "disabled", ""})
 
 
 def coerce_petpass_bool(value) -> bool | None:
