@@ -13,12 +13,13 @@ from .helpers import iter_devices
 
 _LOGGER = logging.getLogger(__name__)
 
-# Maximum time to hold optimistic state when the polled value still
-# disagrees with what we just wrote. The SmartSlydr backend takes a
-# few seconds to propagate a petpass write to /operation/get; without
-# this buffer, the very next fast-poll snaps the switch back to its
-# pre-write state and looks like the toggle didn't take.
-_OPTIMISTIC_TIMEOUT_S = 30.0
+# Long safety timeout for the optimistic override - only hits if the
+# polled state never moves off the pre-write value (which would mean
+# the write silently failed and the UI would otherwise lie forever).
+# Real backend propagation has been observed to take longer than 30s,
+# so we don't time out against propagation lag - we wait for the polled
+# value to actually change instead.
+_OPTIMISTIC_SAFETY_TIMEOUT_S = 120.0
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -45,6 +46,11 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         self._device_id = device.get("device_id", "")
         self._device_name = device.get("devicename", self._device_id)
         self._client = client
+        # Pre-write polled value, captured at the moment of an optimistic
+        # write. We hold the optimistic override until the polled value
+        # moves OFF this baseline (propagation confirmed) or the safety
+        # timeout fires (silent write failure).
+        self._optimistic_baseline: bool | None = None
         self._optimistic_until: float | None = None
 
         self._attr_unique_id = f"{self._device_id}_petpass"
@@ -75,21 +81,29 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         return bool(states.get(self._device_id, False))
 
     def _handle_coordinator_update(self) -> None:
-        # Hold the optimistic write until the polled state confirms it
-        # (the SmartSlydr backend is slow to propagate a petpass write to
-        # /operation/get - the first poll after a toggle typically still
-        # returns the pre-write value). If the polled value never catches
-        # up within _OPTIMISTIC_TIMEOUT_S, drop the override and assume
-        # the command silently didn't take so the UI stops lying.
-        if "_attr_is_on" in self.__dict__:
-            optimistic = bool(self.__dict__["_attr_is_on"])
+        # Hold the optimistic override until either:
+        # 1. The polled value moves OFF the pre-write baseline. That
+        #    means the backend has propagated *something* - whether
+        #    that's our written value or some other change. Either way,
+        #    polled is now ground truth and the override should drop.
+        # 2. The safety timeout fires. Only relevant if the polled
+        #    value never changes (silent write failure); without this
+        #    the override would lie forever.
+        #
+        # We deliberately do NOT drop the override on a wall-clock
+        # timeout against an unchanged polled value - that's exactly
+        # the case where the write succeeded but the backend hasn't
+        # propagated yet, and dropping the override flips the toggle
+        # back to its pre-write state.
+        if "_attr_is_on" in self.__dict__ and self._optimistic_baseline is not None:
             polled = self._polled_is_on()
             timed_out = (
                 self._optimistic_until is not None
                 and time.monotonic() >= self._optimistic_until
             )
-            if polled == optimistic or timed_out:
+            if polled != self._optimistic_baseline or timed_out:
                 self.__dict__.pop("_attr_is_on", None)
+                self._optimistic_baseline = None
                 self._optimistic_until = None
         super()._handle_coordinator_update()
 
@@ -106,10 +120,11 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         await self._send_petpass(0)
 
     async def _send_petpass(self, value: int) -> None:
-        # Optimistic write before the API round trip; held in place
-        # until either the polled state confirms it or the timeout fires.
+        # Capture the polled value as it stood BEFORE this write so the
+        # update handler can detect when the backend has propagated.
+        self._optimistic_baseline = self._polled_is_on()
         self._attr_is_on = bool(value)
-        self._optimistic_until = time.monotonic() + _OPTIMISTIC_TIMEOUT_S
+        self._optimistic_until = time.monotonic() + _OPTIMISTIC_SAFETY_TIMEOUT_S
         self.async_write_ha_state()
         try:
             await self._client.set_command(
@@ -119,6 +134,7 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         except SmartSlydrApiError as err:
             # Roll back optimistic state since the command didn't take.
             self.__dict__.pop("_attr_is_on", None)
+            self._optimistic_baseline = None
             self._optimistic_until = None
             self.async_write_ha_state()
             _LOGGER.warning(
