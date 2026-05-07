@@ -32,7 +32,11 @@ from .const import (
     PLATFORMS,
     SERVICE_RECALIBRATE_COVER,
 )
-from .helpers import SmartSlydrCoordinatorData, iter_devices_in_rooms
+from .helpers import (
+    SmartSlydrCoordinatorData,
+    coerce_petpass_bool,
+    iter_devices_in_rooms,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -181,8 +185,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 petpass_states = {}
                 for st in statuses or []:
                     did = st.get("device_id")
-                    if did is not None and "petpass" in st:
-                        petpass_states[did] = bool(st.get("petpass"))
+                    if did is None or "petpass" not in st:
+                        continue
+                    raw = st.get("petpass")
+                    parsed = coerce_petpass_bool(raw)
+                    if parsed is None:
+                        # Unrecognized shape - log once at warning and
+                        # keep the previous value if any.
+                        _LOGGER.warning(
+                            "Unrecognized petpass value for %s: %r (type %s)",
+                            did,
+                            raw,
+                            type(raw).__name__,
+                        )
+                        if did in prev_petpass:
+                            petpass_states[did] = prev_petpass[did]
+                        continue
+                    petpass_states[did] = parsed
 
         return SmartSlydrCoordinatorData(rooms=rooms, petpass_states=petpass_states)
 

@@ -24,6 +24,39 @@ class SmartSlydrCoordinatorData:
     petpass_states: dict[str, bool] = field(default_factory=dict)
 
 
+_TRUTHY_STRINGS = frozenset({"true", "1", "on", "yes", "enabled"})
+_FALSY_STRINGS = frozenset({"false", "0", "off", "no", "disabled", ""})
+
+
+def coerce_petpass_bool(value) -> bool | None:
+    """Interpret an /operation/get petpass field as a clean bool.
+
+    The SmartSlydr backend has been observed returning the petpass
+    state as either a JSON bool, an int (0/1), or a string ("on"/"off",
+    "0"/"1", etc.). Python's plain bool() coercion is dangerous on
+    strings because every non-empty string is truthy, so bool("off")
+    and bool("0") both return True - which is exactly the bug that
+    made the switch stick at "on" regardless of the actual device
+    state.
+
+    Returns None if the value is missing or in an unrecognized shape,
+    so callers can decide whether to ignore it or fall back to the
+    previous polled value.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _TRUTHY_STRINGS:
+            return True
+        if s in _FALSY_STRINGS:
+            return False
+        return None
+    return None
+
+
 def iter_devices_in_rooms(rooms: Any) -> Iterator[dict]:
     """Yield each device dict from a room_lists payload, defensively.
 
