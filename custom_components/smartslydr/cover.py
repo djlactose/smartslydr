@@ -3,7 +3,11 @@
 import logging
 import time
 
-from homeassistant.components.cover import CoverEntity, CoverEntityFeature
+from homeassistant.components.cover import (
+    CoverDeviceClass,
+    CoverEntity,
+    CoverEntityFeature,
+)
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -41,6 +45,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class SmartSlydrCover(CoordinatorEntity, CoverEntity):
     """Representation of a SmartSlydr cover (e.g. door or shade)."""
 
+    # SmartSlydr's flagship product is a sliding door. v0.4 of the
+    # public REST API doesn't surface a per-device type field; if a
+    # future schema does, this can be flipped to detection-based.
+    _attr_device_class = CoverDeviceClass.DOOR
     _attr_supported_features = (
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
