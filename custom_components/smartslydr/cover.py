@@ -9,6 +9,8 @@ from .api_client import SmartSlydrApiClient
 from .const import DOMAIN
 
 COMMAND_POSITION = "position"
+# Sentinel for the position command meaning "stop wherever you are" -
+# 0..100 are real position percentages, 200 is documented as the stop op.
 STOP_VALUE = 200
 
 # Debounce window for set-position commands. Without this, an upstream bridge
