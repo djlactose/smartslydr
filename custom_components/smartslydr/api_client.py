@@ -14,6 +14,24 @@ _LOGGER = logging.getLogger(__name__)
 # reach the server.
 TOKEN_LIFETIME = timedelta(minutes=29)
 
+# Schema discovery: anything OUTSIDE these sets is logged at WARNING the first
+# time we see it on a given device, so undocumented fields (e.g. door-button
+# accessory data added after API v0.4) become visible without enabling debug
+# logging or dumping full payloads. Remove once the schema is understood.
+_KNOWN_ROOM_FIELDS = frozenset({"room_name", "room_id", "device_list"})
+_KNOWN_DEVICE_FIELDS = frozenset({
+    "device_id", "devicename", "petpass", "room_name", "room_id",
+    "wlansignal", "temperature", "humidity", "position", "error",
+    "status", "sound", "wlanmac",
+})
+_KNOWN_TOPLEVEL_FIELDS = frozenset({"statusCode", "room_lists"})
+
+
+def _truncate(value, limit: int = 400):
+    """Stringify and truncate so a stray giant value doesn't flood logs."""
+    s = repr(value)
+    return s if len(s) <= limit else s[:limit] + "...<truncated>"
+
 
 class SmartSlydrApiClient:
     BASE_URL = "https://34yl6ald82.execute-api.us-east-2.amazonaws.com/prod"
@@ -26,6 +44,9 @@ class SmartSlydrApiClient:
         self._access_token: str | None = None
         self._refresh_token_value: str | None = None
         self._token_expires: datetime | None = None
+        # Tracks which (scope, key) tuples we've already warned about so each
+        # unfamiliar field is reported once per HA process, not every refresh.
+        self._reported_unknown_fields: set[tuple[str, str]] = set()
 
     def _debug_enabled(self) -> bool:
         if not self._hass:
@@ -81,7 +102,47 @@ class SmartSlydrApiClient:
             _LOGGER.error("Unexpected /devices response: %s", data)
             raise SmartSlydrApiError("SmartSlydr devices API returned unexpected data")
 
+        self._report_unknown_devices_fields(data)
         return data["room_lists"]
+
+    def _report_unknown_devices_fields(self, data: dict) -> None:
+        """Warn once per process for each schema field not in API v0.4."""
+        for key in set(data.keys()) - _KNOWN_TOPLEVEL_FIELDS:
+            if ("toplevel", key) in self._reported_unknown_fields:
+                continue
+            self._reported_unknown_fields.add(("toplevel", key))
+            _LOGGER.warning(
+                "[GET_DEVICES schema] unrecognized top-level key %r; value type=%s, sample=%r",
+                key, type(data[key]).__name__, _truncate(data[key]),
+            )
+
+        for room in data.get("room_lists") or []:
+            if not isinstance(room, dict):
+                continue
+            for key in set(room.keys()) - _KNOWN_ROOM_FIELDS:
+                if ("room", key) in self._reported_unknown_fields:
+                    continue
+                self._reported_unknown_fields.add(("room", key))
+                _LOGGER.warning(
+                    "[GET_DEVICES schema] room %r has unrecognized key %r = %r",
+                    room.get("room_name"), key, _truncate(room[key]),
+                )
+
+            for dev in room.get("device_list") or []:
+                if not isinstance(dev, dict):
+                    continue
+                for key in set(dev.keys()) - _KNOWN_DEVICE_FIELDS:
+                    scope_key = ("device", key)
+                    if scope_key in self._reported_unknown_fields:
+                        continue
+                    self._reported_unknown_fields.add(scope_key)
+                    _LOGGER.warning(
+                        "[GET_DEVICES schema] device %s (%s) has unrecognized key %r = %r",
+                        dev.get("device_id"),
+                        dev.get("devicename"),
+                        key,
+                        _truncate(dev[key]),
+                    )
 
     async def get_status(self, commands):
         await self._ensure_token()
