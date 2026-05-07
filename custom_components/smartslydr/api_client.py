@@ -90,11 +90,17 @@ class SmartSlydrApiClient:
             self._log_response("GET_DEVICES", resp.status, data)
             resp.raise_for_status()
 
-        if not isinstance(data, dict) or "room_lists" not in data:
-            _LOGGER.error("Unexpected /devices response: %s", data)
+        rooms = data.get("room_lists") if isinstance(data, dict) else None
+        if not isinstance(rooms, list):
+            # Don't log the full body - it can be large and may contain
+            # account-scoped identifiers; the type alone is enough to debug.
+            _LOGGER.error(
+                "Unexpected /devices response: room_lists is %s",
+                type(rooms).__name__,
+            )
             raise SmartSlydrApiError("SmartSlydr devices API returned unexpected data")
 
-        return data["room_lists"]
+        return rooms
 
     async def get_status(self, commands):
         await self._ensure_token()
