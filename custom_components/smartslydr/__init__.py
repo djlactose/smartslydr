@@ -55,9 +55,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         try:
             rooms = await client.get_devices()
         except SmartSlydrApiError as err:
+            # SmartSlydrApiError messages are sanitized at construction
+            # (no upstream payload echo), safe to surface.
             raise UpdateFailed(str(err)) from err
         except Exception as err:
-            raise UpdateFailed(f"Error fetching devices: {err}") from err
+            # Generic exceptions can carry whatever the underlying lib
+            # decided to put in the message - keep it out of HA's UI and
+            # let logs carry the detail via "from err".
+            _LOGGER.exception("Unexpected error fetching devices")
+            raise UpdateFailed("Error fetching devices") from err
 
         device_ids = [
             dev.get("device_id")
