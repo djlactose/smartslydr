@@ -126,38 +126,57 @@ list.
 `cover.stop_cover` sends the documented stop value (`position = 200`) per the
 API spec.
 
-## Debug logging
+### Cover animation and calibration
 
-The API client emits per-request debug logs when the helper boolean
-`input_boolean.smartslydr_debug_mode` is `on`. To use it:
+The cover entity animates smoothly while a move is in flight. Because the
+SmartSlydr REST API doesn't push the door's physical position as it
+moves, the integration interpolates locally based on a per-device
+*move duration* — how long a full open or close takes — and reconciles
+against the polled position every few seconds (drift > 10 % triggers a
+snap to the polled value).
 
-1. Create the helper: **Settings → Devices & Services → Helpers →
-   Create helper → Toggle**, name it `SmartSlydr Debug Mode`. The entity ID
-   must be exactly `input_boolean.smartslydr_debug_mode`.
-2. Make sure debug-level logs are captured for this integration. Add to
-   `configuration.yaml`:
+- **Auto-calibration**: the first full open or close (0 → 100 or 100 → 0)
+  measures the actual elapsed time and stores it as the calibrated
+  duration. Subsequent moves animate at that rate.
+- **Until calibration completes**, animation uses a 10-second default.
+- **Recalibration**: call the `smartslydr.recalibrate_cover` service from
+  Developer Tools → Services (or wire it to a button) to clear the
+  calibrated value. The next full traversal recalibrates.
+- **Manual override**: an advanced user can put
+  `move_duration_<device_id>: <seconds>` directly into the entry's
+  options (via HA's `core.config_entries` storage); the override beats
+  calibration and the default. There is no UI for this today.
 
-   ```yaml
-   logger:
-     default: warning
-     logs:
-       custom_components.smartslydr: debug
-   ```
+## Debug logging and diagnostics
 
-3. Toggle the helper on; per-request request/response bodies appear in the
-   HA log. Toggle it off when done — the integration won't log payloads
-   while the helper is off, even if the logger level is debug.
+For per-request request/response bodies, click **Enable debug logging**
+on the integration's settings page (**Settings → Devices & Services →
+Lychee Things**). Bearer tokens (`access_token`, `refresh_token`) are
+redacted before they reach the log. Click **Disable debug logging**
+when you're done — HA writes the captured output to a download file
+and reverts the log level.
+
+For a one-shot point-in-time snapshot without enabling debug logging at
+all, use the **Download diagnostics** button on the same page. It
+returns a JSON file with the current coordinator data and entry
+options; account email, password, tokens, and MAC addresses are
+redacted.
+
+> Older versions of this integration used a manually-created
+> `input_boolean.smartslydr_debug_mode` helper to gate debug logs. That
+> helper is no longer used and can be deleted.
 
 ## Troubleshooting
 
 ### `Unexpected /devices response: { 'errorType': 'TypeError', ... }`
 
 This is the **upstream Lambda backend** crashing — not the integration. The
-integration logs the raw error JSON for diagnosis. Check whether the
-LycheeThings mobile app can still see your devices; if it can, the public
-REST API has regressed and you'll need to report it to LycheeThings (a
-ready-to-send draft is in
-[`BUG_REPORT_LYCHEETHINGS.md`](BUG_REPORT_LYCHEETHINGS.md)).
+integration surfaces a "SmartSlydr backend returned an unexpected response"
+repair card in **Settings → System → Repairs** when this happens, and
+auto-clears it once the API recovers. Check whether the LycheeThings mobile
+app can still see your devices; if it can, the public REST API has regressed
+and is worth reporting to SmartSlydr support. No manual action is needed on
+the HA side — the next successful poll restores normal operation.
 
 ### `auth_failed` when adding the integration
 
@@ -199,6 +218,18 @@ API extension from LycheeThings, or reverse-engineering the mobile app's
 internal endpoint via packet capture. If you're affected, please file an
 upstream feature request — the integration will pick it up automatically
 once the data is in `/devices`.
+
+### Editing the petpass allowed-pet list
+
+The petpass switch toggles the door's pet-pass mode on/off and exposes the
+current allowed-pet list as a read-only `allowed_pets` attribute. **Editing
+that list is not supported** — the public REST API v0.4 only documents the
+`petpass` on/off command via `/operation`, and the same speculative-command
+probing that found the door-button gap also showed the upstream silently
+no-ops unrecognized commands. Without a confirmed write path, shipping a
+"set petpass slots" service would silently fail. For now, edit slots in
+the LycheeThings mobile app; the next coordinator poll will pick up the
+new list and update the `allowed_pets` attribute.
 
 ## Reporting bugs
 

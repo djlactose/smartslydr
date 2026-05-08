@@ -1,45 +1,110 @@
 # config/custom_components/smartslydr/__init__.py
 
+import asyncio
 import logging
 from datetime import timedelta
 
+import aiohttp
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import (
+    config_validation as cv,
+    entity_registry as er,
+    issue_registry as ir,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api_client import SmartSlydrApiClient, SmartSlydrApiError
+from .api_client import SmartSlydrApiClient, SmartSlydrApiError, SmartSlydrAuthError
 from .const import (
+    CALIBRATED_DURATION_OPTION_PREFIX,
+    CONF_BASE_URL,
     CONF_PASSWORD,
     CONF_USERNAME,
+    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
+    SERVICE_RECALIBRATE_COVER,
+)
+from .helpers import (
+    SmartSlydrCoordinatorData,
+    coerce_petpass_bool,
+    iter_devices_in_rooms,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-DEBUG_BOOLEAN = "input_boolean.smartslydr_debug_mode"
+ISSUE_UPSTREAM_UNEXPECTED = "upstream_unexpected_response"
+ISSUE_UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+_TRANSIENT_ISSUES = (ISSUE_UPSTREAM_UNEXPECTED, ISSUE_UPSTREAM_UNAVAILABLE)
 
 
-async def async_setup(hass: HomeAssistant, config: dict):
-    hass.data.setdefault(DOMAIN, {})
+def _create_issue(hass: HomeAssistant, key: str) -> None:
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        key,
+        # Fixable so the card has a "Submit" button that runs a retry
+        # via repairs.py instead of only the dismiss-forever "Ignore"
+        # button. Submit doesn't mark the issue dismissed-by-version,
+        # so the card reappears if the underlying problem recurs.
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=key,
+    )
 
-    def _refresh_debug_state() -> None:
-        state = hass.states.get(DEBUG_BOOLEAN)
-        hass.data.setdefault(DOMAIN, {})["debug"] = bool(state and state.state == "on")
+
+def _clear_transient_issues(hass: HomeAssistant) -> None:
+    for key in _TRANSIENT_ISSUES:
+        ir.async_delete_issue(hass, DOMAIN, key)
+
+
+# Adaptive polling: when a user issues a command, we want to see real
+# state quickly (so optimistic writes get reconciled). Drop the poll
+# interval to FAST_POLL_INTERVAL_S for FAST_POLL_DURATION_S, then revert.
+#
+# 5s/30s was the original (12 requests in 30s, since each poll hits
+# /devices and /operation/get). That tripped 429s on the upstream AWS
+# API Gateway when several covers were polled concurrently. 10s/30s
+# gives the local interpolation enough reconciliation samples while
+# halving the request rate during the fast window.
+FAST_POLL_INTERVAL_S = 10
+FAST_POLL_DURATION_S = 30
+
+
+class SmartSlydrCoordinator(DataUpdateCoordinator):
+    """Coordinator that supports a temporary fast-poll window."""
+
+    def __init__(self, hass: HomeAssistant, *, default_interval: timedelta, **kwargs):
+        super().__init__(hass, **kwargs)
+        self._default_interval = default_interval
+        self._restore_handle = None
 
     @callback
-    def _on_debug_change(event) -> None:
-        _refresh_debug_state()
-        _LOGGER.debug("SmartSlydr debug logging set to %s", hass.data[DOMAIN].get("debug"))
+    def trigger_fast_poll(self) -> None:
+        """Drop to fast polling for FAST_POLL_DURATION_S, then restore.
 
-    _refresh_debug_state()
-    async_track_state_change_event(hass, [DEBUG_BOOLEAN], _on_debug_change)
+        Idempotent: a second call inside the window cancels and reschedules
+        the restore (the window slides) rather than nesting timers.
+        """
+        self.update_interval = timedelta(seconds=FAST_POLL_INTERVAL_S)
+        if self._restore_handle is not None:
+            self._restore_handle()
+        self._restore_handle = async_call_later(
+            self.hass, FAST_POLL_DURATION_S, self._restore_default_interval
+        )
+        self.hass.async_create_task(self.async_request_refresh())
 
-    return True
+    @callback
+    def _restore_default_interval(self, _now) -> None:
+        self._restore_handle = None
+        self.update_interval = self._default_interval
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
@@ -47,45 +112,116 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     password = entry.data[CONF_PASSWORD]
 
     session = async_get_clientsession(hass)
-    client = SmartSlydrApiClient(username, password, session, hass=hass)
+    base_url = entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL)
+    client = SmartSlydrApiClient(username, password, session, base_url=base_url)
+
+    hass.data.setdefault(DOMAIN, {})
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
     async def _async_update_data():
         try:
             rooms = await client.get_devices()
+        except SmartSlydrAuthError as err:
+            # Triggers HA's reauth flow (a "Repair credentials" card on
+            # the integration page). User re-enters the password without
+            # losing entity history.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except SmartSlydrApiError as err:
+            # SmartSlydrApiError messages are sanitized at construction
+            # (no upstream payload echo), safe to surface. Also signal a
+            # repair issue so the user sees a clear "this is server-side"
+            # explanation on the integration page.
+            _create_issue(hass, ISSUE_UPSTREAM_UNEXPECTED)
             raise UpdateFailed(str(err)) from err
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            # aiohttp.ClientError is the parent of ClientResponseError,
+            # ClientConnectorError, and aiohttp.InvalidURL. OSError covers
+            # raw socket/DNS errors that aren't always wrapped. Any of
+            # these warrants a repair card with the URL-reset fix flow.
+            _create_issue(hass, ISSUE_UPSTREAM_UNAVAILABLE)
+            _LOGGER.warning(
+                "SmartSlydr backend unreachable (%s): %s",
+                type(err).__name__,
+                err,
+            )
+            raise UpdateFailed("Error fetching devices") from err
         except Exception as err:
-            raise UpdateFailed(f"Error fetching devices: {err}") from err
+            # Truly unexpected (likely a Python-side bug). Still surface a
+            # repair card so the user has access to the URL-reset fix
+            # flow if that turns out to be the underlying cause; the full
+            # traceback hits the log so the bug stays diagnosable.
+            _create_issue(hass, ISSUE_UPSTREAM_UNAVAILABLE)
+            _LOGGER.exception("Unexpected error fetching devices")
+            raise UpdateFailed("Error fetching devices") from err
+
+        # Successful poll - clear any stale repair cards.
+        _clear_transient_issues(hass)
 
         device_ids = [
-            dev.get("device_id")
-            for room in rooms or []
-            for dev in (room.get("device_list") or [])
+            dev["device_id"]
+            for dev in iter_devices_in_rooms(rooms)
             if dev.get("device_id")
         ]
 
-        petpass_states: dict[str, bool] = {}
+        # /devices.petpass and /operation/get?command=petpass look like
+        # they overlap, but they're different: /devices.petpass is the
+        # *configuration* (the list of allowed-pet slot entries),
+        # while /operation/get returns the *current on/off* state of
+        # the petpass toggle. Both are needed - the switch's is_on
+        # reads this map; allowed_pets reads /devices.petpass.
+        #
+        # On a transient failure (429, network blip), retain the previous
+        # poll's petpass_states - clearing them would flip every petpass
+        # switch to OFF in the UI for one cycle, which is a worse lie
+        # than showing slightly stale data.
+        prev = coordinator.data
+        prev_petpass = prev.petpass_states if prev is not None else {}
+        petpass_states: dict[str, bool] = dict(prev_petpass)
         if device_ids:
             commands = [{"device_id": did, "command": "petpass"} for did in device_ids]
             try:
                 statuses = await client.get_status(commands)
+            except Exception as err:
+                _LOGGER.warning(
+                    "Failed to fetch petpass states (keeping last known): %s",
+                    err,
+                )
+            else:
+                # Success: replace with fresh values rather than merging,
+                # so a removed device drops out cleanly.
+                petpass_states = {}
                 for st in statuses or []:
                     did = st.get("device_id")
-                    if did is not None and "petpass" in st:
-                        petpass_states[did] = bool(st.get("petpass"))
-            except Exception as err:
-                _LOGGER.warning("Failed to fetch petpass states: %s", err)
+                    if did is None or "petpass" not in st:
+                        continue
+                    raw = st.get("petpass")
+                    parsed = coerce_petpass_bool(raw)
+                    if parsed is None:
+                        # Unrecognized shape - log once at warning and
+                        # keep the previous value if any.
+                        _LOGGER.warning(
+                            "Unrecognized petpass value for %s: %r (type %s)",
+                            did,
+                            raw,
+                            type(raw).__name__,
+                        )
+                        if did in prev_petpass:
+                            petpass_states[did] = prev_petpass[did]
+                        continue
+                    petpass_states[did] = parsed
 
-        return {"rooms": rooms, "petpass_states": petpass_states}
+        return SmartSlydrCoordinatorData(rooms=rooms, petpass_states=petpass_states)
 
-    coordinator = DataUpdateCoordinator(
+    default_interval = timedelta(seconds=scan_interval)
+    coordinator = SmartSlydrCoordinator(
         hass,
-        _LOGGER,
+        logger=_LOGGER,
         name=DOMAIN,
         update_method=_async_update_data,
-        update_interval=timedelta(seconds=scan_interval),
+        update_interval=default_interval,
+        config_entry=entry,
+        default_interval=default_interval,
     )
 
     # Raises ConfigEntryNotReady on failure so HA retries with backoff
@@ -99,11 +235,100 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Reload when the user saves the options form so changes to
+    # base_url, scan_interval, etc. take effect immediately. async_on_unload
+    # ensures the listener is removed during reload so we don't accumulate
+    # one per setup cycle.
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    _async_register_services(hass)
+
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry so the running client picks up new options."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+_RECALIBRATE_SCHEMA = vol.Schema({
+    vol.Required("entity_id"): cv.entity_ids,
+})
+
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register integration-level services. Idempotent across entries."""
+    if hass.services.has_service(DOMAIN, SERVICE_RECALIBRATE_COVER):
+        return
+
+    async def _handle_recalibrate(call: ServiceCall) -> None:
+        ent_reg = er.async_get(hass)
+        for entity_id in call.data["entity_id"]:
+            entity = ent_reg.async_get(entity_id)
+            if entity is None or entity.domain != "cover":
+                continue
+            if not entity.unique_id.endswith("_cover"):
+                continue
+            device_id = entity.unique_id[: -len("_cover")]
+            target_entry = hass.config_entries.async_get_entry(entity.config_entry_id)
+            if target_entry is None:
+                continue
+            key = f"{CALIBRATED_DURATION_OPTION_PREFIX}{device_id}"
+            if key not in target_entry.options:
+                continue
+            new_options = {k: v for k, v in target_entry.options.items() if k != key}
+            hass.config_entries.async_update_entry(target_entry, options=new_options)
+            _LOGGER.info(
+                "Cleared calibrated move duration for %s (%s)",
+                entity_id,
+                device_id,
+            )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RECALIBRATE_COVER,
+        _handle_recalibrate,
+        schema=_RECALIBRATE_SCHEMA,
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        bucket = hass.data[DOMAIN].pop(entry.entry_id, None)
+        coordinator = bucket.get("coordinator") if bucket else None
+        # Cancel any in-flight fast-poll restore so we don't leak the timer.
+        if isinstance(coordinator, SmartSlydrCoordinator) and coordinator._restore_handle:
+            coordinator._restore_handle()
+            coordinator._restore_handle = None
     return unload_ok
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate a config entry to the current schema version."""
+    _LOGGER.debug("Migrating SmartSlydr entry %s from v%s", entry.entry_id, entry.version)
+
+    if entry.version == 1:
+        # v1 -> v2: cover entity unique_id was the bare device_id, which
+        # collides with the device-registry identifier and leaves no room
+        # for future per-device entities. Rewrite to <device_id>_cover.
+        ent_reg = er.async_get(hass)
+        for entity in list(ent_reg.entities.values()):
+            if (
+                entity.config_entry_id == entry.entry_id
+                and entity.domain == "cover"
+                and not entity.unique_id.endswith("_cover")
+            ):
+                new_unique_id = f"{entity.unique_id}_cover"
+                _LOGGER.info(
+                    "Migrating cover %s unique_id %s -> %s",
+                    entity.entity_id,
+                    entity.unique_id,
+                    new_unique_id,
+                )
+                ent_reg.async_update_entity(
+                    entity.entity_id, new_unique_id=new_unique_id
+                )
+        hass.config_entries.async_update_entry(entry, version=2)
+
+    return True

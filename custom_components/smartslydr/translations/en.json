@@ -1,0 +1,95 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Connect to SmartSlydr",
+                "description": "Sign in with the SmartSlydr (LycheeThings) account you use in the mobile app.",
+                "data": {
+                    "username": "Email",
+                    "password": "Password"
+                }
+            },
+            "reauth_confirm": {
+                "title": "Re-authenticate SmartSlydr",
+                "description": "The integration could not sign in to SmartSlydr with the stored credentials. Please re-enter the password for {username}.",
+                "data": {
+                    "password": "Password"
+                }
+            }
+        },
+        "error": {
+            "auth_failed": "Invalid email or password.",
+            "cannot_connect": "Unable to reach the SmartSlydr API.",
+            "unknown": "Unexpected response from SmartSlydr."
+        },
+        "abort": {
+            "already_configured": "This SmartSlydr account is already configured.",
+            "reauth_successful": "Re-authentication successful."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "SmartSlydr options",
+                "data": {
+                    "scan_interval": "Scan interval (seconds)",
+                    "base_url": "API base URL"
+                },
+                "data_description": {
+                    "scan_interval": "How often to poll the SmartSlydr API. Range: 10–3600 seconds.",
+                    "base_url": "Override only if SmartSlydr publishes a new endpoint or you need a local proxy."
+                }
+            }
+        }
+    },
+    "issues": {
+        "upstream_unexpected_response": {
+            "title": "SmartSlydr backend returned an unexpected response",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Retry SmartSlydr connection",
+                        "description": "The SmartSlydr API returned a payload the integration didn't recognize. This is usually a server-side issue with the LycheeThings backend, not your account or your Home Assistant setup, and recovers automatically once the API is restored. If the LycheeThings mobile app can also no longer see your devices, please report the outage to SmartSlydr support.\n\nClick Submit to retry the API now. If the backend is reachable, this notice will clear automatically."
+                    },
+                    "confirm_with_reset": {
+                        "title": "Retry SmartSlydr connection",
+                        "description": "The SmartSlydr API returned a payload the integration didn't recognize. This is usually a server-side issue with the LycheeThings backend.\n\nThe integration is currently configured with a custom API base URL:\n\n- Current URL: {current_url}\n- Default URL: {default_url}\n\nClick Submit to retry. If you suspect the custom URL is the problem, toggle **Reset to default URL** below to revert it before retrying.",
+                        "data": {
+                            "reset_base_url": "Reset to default URL"
+                        }
+                    }
+                }
+            }
+        },
+        "upstream_unavailable": {
+            "title": "SmartSlydr backend is unreachable",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Retry SmartSlydr connection",
+                        "description": "The integration could not contact the SmartSlydr API after several retries. Check your internet connection and the AWS service health. Your devices will appear unavailable until the connection is restored.\n\nClick Submit to retry the API now. If the backend is reachable, this notice will clear automatically."
+                    },
+                    "confirm_with_reset": {
+                        "title": "Retry SmartSlydr connection",
+                        "description": "The integration could not contact the SmartSlydr API.\n\nThe integration is currently configured with a custom API base URL:\n\n- Current URL: {current_url}\n- Default URL: {default_url}\n\nClick Submit to retry. If you suspect the custom URL is the problem, toggle **Reset to default URL** below to revert it before retrying.",
+                        "data": {
+                            "reset_base_url": "Reset to default URL"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "services": {
+        "recalibrate_cover": {
+            "name": "Recalibrate cover move duration",
+            "description": "Clear the auto-calibrated move duration for one or more SmartSlydr cover entities. The next full open or close traversal will measure a new duration. Manual overrides set in the integration's options are preserved.",
+            "fields": {
+                "entity_id": {
+                    "name": "Cover",
+                    "description": "Cover entity (or entities) to recalibrate."
+                }
+            }
+        }
+    }
+}
