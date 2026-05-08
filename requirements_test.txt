@@ -1,5 +1,9 @@
-pytest>=8.0
-pytest-asyncio>=0.23
+# pytest pinned to 8.x: pytest 9 makes "sync test requesting async
+# fixture" a hard error, and pytest-homeassistant-custom-component's
+# documented autouse'd `enable_custom_integrations` fixture is async.
+# Re-evaluate when that plugin ships pytest-9 support.
+pytest>=8.0,<9
+pytest-asyncio>=0.23,<1
 pytest-homeassistant-custom-component>=0.13
 aioresponses>=0.7.6
 freezegun>=1.5
