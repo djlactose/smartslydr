@@ -3,7 +3,16 @@
 # documented autouse'd `enable_custom_integrations` fixture is async.
 # Re-evaluate when that plugin ships pytest-9 support.
 pytest>=8.0,<9
-pytest-asyncio>=0.23,<1
+# pytest-asyncio 0.25 changed strict-mode resolution of sync fixtures
+# that depend on async fixtures. pytest-homeassistant-custom-component
+# 0.13.254 has a sync `enable_custom_integrations` fixture that depends
+# on the async `hass` fixture, and the new resolution hands it the
+# un-awaited async generator instead of the HomeAssistant instance:
+#
+#     AttributeError: 'async_generator' object has no attribute 'data'
+#
+# Cap to <0.25 so the plugin's expected resolution behavior holds.
+pytest-asyncio>=0.23,<0.25
 pytest-homeassistant-custom-component>=0.13
 aioresponses>=0.7.6
 freezegun>=1.5

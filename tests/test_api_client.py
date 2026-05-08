@@ -202,7 +202,13 @@ async def test_get_devices_lambda_error_payload_raises(
 async def test_get_devices_retries_5xx_then_succeeds(
     session: ClientSession, monkeypatch
 ) -> None:
-    monkeypatch.setattr("asyncio.sleep", lambda *a, **kw: asyncio.sleep(0))
+    # Replace asyncio.sleep with a no-op so retries don't actually wait. We
+    # can't `lambda: asyncio.sleep(0)` - that recurses through the patched
+    # name. Define an explicit async no-op instead.
+    async def _no_sleep(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
     with aioresponses() as m:
         m.post(f"{BASE}/auth", payload={"access_token": "tok"})
         m.get(f"{BASE}/devices", status=503)
@@ -219,7 +225,13 @@ async def test_get_devices_does_not_retry_4xx(
 ) -> None:
     import aiohttp
 
-    monkeypatch.setattr("asyncio.sleep", lambda *a, **kw: asyncio.sleep(0))
+    # Replace asyncio.sleep with a no-op so retries don't actually wait. We
+    # can't `lambda: asyncio.sleep(0)` - that recurses through the patched
+    # name. Define an explicit async no-op instead.
+    async def _no_sleep(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
     with aioresponses() as m:
         m.post(f"{BASE}/auth", payload={"access_token": "tok"})
         m.get(f"{BASE}/devices", status=404)
@@ -235,7 +247,13 @@ async def test_set_command_does_not_retry(
     """State-changing calls must not retry - could double-actuate the cover."""
     import aiohttp
 
-    monkeypatch.setattr("asyncio.sleep", lambda *a, **kw: asyncio.sleep(0))
+    # Replace asyncio.sleep with a no-op so retries don't actually wait. We
+    # can't `lambda: asyncio.sleep(0)` - that recurses through the patched
+    # name. Define an explicit async no-op instead.
+    async def _no_sleep(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
     with aioresponses() as m:
         m.post(f"{BASE}/auth", payload={"access_token": "tok"})
         m.post(f"{BASE}/operation", status=503)
