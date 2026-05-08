@@ -7,11 +7,10 @@ pytest-asyncio>=0.23,<1
 pytest-homeassistant-custom-component>=0.13
 aioresponses>=0.7.6
 freezegun>=1.5
-# aiodns 3.5+ references `pycares.ares_query_*_result` attributes at
-# module-load time (in DNSResolver type annotations). Those attributes
-# only exist in pycares 4.10+, but pytest-homeassistant-custom-component's
-# transitive deps cap pycares below that, so pip resolves to an
-# incompatible pair and pytest fails at plugin-load. Cap aiodns
-# below the version that introduced the breakage; pycares can be
-# anything compatible with that aiodns.
-aiodns<3.5
+# aiodns is uninstalled post-install in the CI workflow (see
+# .github/workflows/validate.yml). aiodns has type annotations that
+# reference pycares attributes pinned out of reach by HA's transitive
+# deps, and pinning aiodns to any installable older version still
+# trips the same module-load AttributeError. aiohttp's resolver
+# wraps `import aiodns` in try/except and falls through to the
+# default resolver, which is fine for tests.

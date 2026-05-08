@@ -32,5 +32,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements_test.txt
+          # aiodns has type annotations that reference pycares
+          # attributes pinned out of reach by HA's transitive deps -
+          # the result is a module-load AttributeError before any
+          # test runs. aiohttp.resolver wraps `import aiodns` in
+          # try/except and falls back to the default resolver, so
+          # uninstalling here is safe; our tests don't do real DNS.
+          pip uninstall -y aiodns pycares
       - name: Run pytest
         run: pytest tests/ -v
