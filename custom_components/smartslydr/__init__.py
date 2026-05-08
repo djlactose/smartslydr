@@ -227,9 +227,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Reload when the user saves the options form so changes to
+    # base_url, scan_interval, etc. take effect immediately. async_on_unload
+    # ensures the listener is removed during reload so we don't accumulate
+    # one per setup cycle.
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
     _async_register_services(hass)
 
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry so the running client picks up new options."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 _RECALIBRATE_SCHEMA = vol.Schema({
