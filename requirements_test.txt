@@ -7,3 +7,9 @@ pytest-asyncio>=0.23,<1
 pytest-homeassistant-custom-component>=0.13
 aioresponses>=0.7.6
 freezegun>=1.5
+# pycares 4.10.0 (Oct 2025) introduced the `ares_query_*_result`
+# attributes that aiodns 3.5+ references at module load time. Without
+# this pin pip can resolve aiodns 3.5+ alongside pycares 4.9 or
+# earlier, and pytest fails at plugin-load with AttributeError before
+# any test runs. Tied to aiodns + aiohttp pulled by pytest-aiohttp.
+pycares>=4.10
