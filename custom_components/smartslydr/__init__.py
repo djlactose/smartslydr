@@ -134,20 +134,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             # explanation on the integration page.
             _create_issue(hass, ISSUE_UPSTREAM_UNEXPECTED)
             raise UpdateFailed(str(err)) from err
-        except (
-            aiohttp.ClientResponseError,
-            aiohttp.ClientConnectorError,
-            asyncio.TimeoutError,
-        ) as err:
-            # Retries already exhausted in the api_client. A persistent
-            # network/5xx warrants a repair card too.
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            # aiohttp.ClientError is the parent of ClientResponseError,
+            # ClientConnectorError, and aiohttp.InvalidURL. OSError covers
+            # raw socket/DNS errors that aren't always wrapped. Any of
+            # these warrants a repair card with the URL-reset fix flow.
             _create_issue(hass, ISSUE_UPSTREAM_UNAVAILABLE)
-            _LOGGER.warning("SmartSlydr backend unreachable: %s", err)
+            _LOGGER.warning(
+                "SmartSlydr backend unreachable (%s): %s",
+                type(err).__name__,
+                err,
+            )
             raise UpdateFailed("Error fetching devices") from err
         except Exception as err:
-            # Generic exceptions can carry whatever the underlying lib
-            # decided to put in the message - keep it out of HA's UI and
-            # let logs carry the detail via "from err".
+            # Truly unexpected (likely a Python-side bug). Still surface a
+            # repair card so the user has access to the URL-reset fix
+            # flow if that turns out to be the underlying cause; the full
+            # traceback hits the log so the bug stays diagnosable.
+            _create_issue(hass, ISSUE_UPSTREAM_UNAVAILABLE)
             _LOGGER.exception("Unexpected error fetching devices")
             raise UpdateFailed("Error fetching devices") from err
 
