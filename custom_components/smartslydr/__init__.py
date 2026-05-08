@@ -50,7 +50,11 @@ def _create_issue(hass: HomeAssistant, key: str) -> None:
         hass,
         DOMAIN,
         key,
-        is_fixable=False,
+        # Fixable so the card has a "Submit" button that runs a retry
+        # via repairs.py instead of only the dismiss-forever "Ignore"
+        # button. Submit doesn't mark the issue dismissed-by-version,
+        # so the card reappears if the underlying problem recurs.
+        is_fixable=True,
         severity=ir.IssueSeverity.WARNING,
         translation_key=key,
     )
