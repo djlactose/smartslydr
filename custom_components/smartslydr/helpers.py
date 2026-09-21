@@ -7,6 +7,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from .api_client import SmartSlydrRateLimitError
+
 
 @dataclass(frozen=True)
 class SmartSlydrCoordinatorData:
@@ -59,6 +61,24 @@ def coerce_petpass_bool(value) -> bool | None:
             return False
         return None
     return None
+
+
+def command_error_message(err: Exception) -> str:
+    """Build the user-facing text for a failed open/close/petpass command.
+
+    A rate-limit rejection gets its own wording because it's the one
+    command failure the user can actually fix themselves, and because
+    the generic "command failed" text sent them chasing a backend
+    outage that wasn't happening.
+    """
+    if isinstance(err, SmartSlydrRateLimitError):
+        return (
+            "SmartSlydr rejected the command because the API is rate-limiting "
+            "this account. This usually means the integration is polling too "
+            "often: raise the scan interval in the integration's options, then "
+            "wait a few minutes for the limit to reset."
+        )
+    return f"SmartSlydr command failed: {err}"
 
 
 def iter_devices_in_rooms(rooms: Any) -> Iterator[dict]:

@@ -1,15 +1,17 @@
 # config/custom_components/smartslydr/switch.py
 
+import asyncio
 import logging
 import time
 
+import aiohttp
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api_client import SmartSlydrApiClient, SmartSlydrApiError
 from .const import DOMAIN
-from .helpers import iter_devices
+from .helpers import command_error_message, iter_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,18 +133,29 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
                 [{"device_id": self._device_id,
                   "commands": [{"key": "petpass", "value": value}]}]
             )
-        except SmartSlydrApiError as err:
+        except (
+            SmartSlydrApiError,
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            OSError,
+        ) as err:
             # Roll back optimistic state since the command didn't take.
+            #
+            # The catch used to be SmartSlydrApiError only, so an
+            # HTTP-level rejection (a 429 from the upstream throttle, in
+            # the report that prompted this) skipped the rollback
+            # entirely: the toggle kept showing the requested state for
+            # the full _OPTIMISTIC_SAFETY_TIMEOUT_S while the raw aiohttp
+            # error escaped the service call.
             self.__dict__.pop("_attr_is_on", None)
             self._optimistic_baseline = None
             self._optimistic_until = None
             self.async_write_ha_state()
             _LOGGER.warning(
-                "SmartSlydr petpass set failed for %s: %s",
+                "SmartSlydr petpass set failed for %s (%s): %s",
                 self._device_id,
+                type(err).__name__,
                 err,
             )
-            raise HomeAssistantError(
-                f"SmartSlydr petpass command failed: {err}"
-            ) from err
+            raise HomeAssistantError(command_error_message(err)) from err
         self.coordinator.trigger_fast_poll()

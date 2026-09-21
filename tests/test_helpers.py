@@ -5,8 +5,13 @@ These touch only the helpers module (no HA fixtures required).
 
 from __future__ import annotations
 
+from custom_components.smartslydr.api_client import (
+    SmartSlydrApiError,
+    SmartSlydrRateLimitError,
+)
 from custom_components.smartslydr.helpers import (
     SmartSlydrCoordinatorData,
+    command_error_message,
     iter_devices,
     iter_devices_in_rooms,
 )
@@ -74,3 +79,26 @@ def test_coordinator_data_is_frozen() -> None:
         pass
     else:
         raise AssertionError("Expected FrozenInstanceError")
+
+
+# ---------------------------------------------------------------------
+# command_error_message
+# ---------------------------------------------------------------------
+
+
+def test_command_error_message_for_rate_limit_is_actionable() -> None:
+    """A throttle rejection is the one command failure the user can fix."""
+    msg = command_error_message(SmartSlydrRateLimitError("HTTP 429"))
+    assert "rate-limiting" in msg
+    assert "scan interval" in msg
+
+
+def test_command_error_message_falls_back_to_the_error_text() -> None:
+    msg = command_error_message(SmartSlydrApiError("boom"))
+    assert "boom" in msg
+
+
+def test_command_error_message_handles_transport_errors() -> None:
+    """Transport errors reach this too now that the catch is wider."""
+    msg = command_error_message(OSError("connection reset"))
+    assert "connection reset" in msg

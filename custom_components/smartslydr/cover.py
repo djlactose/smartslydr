@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 
+import aiohttp
 from homeassistant.components.cover import (
     CoverDeviceClass,
     CoverEntity,
@@ -19,7 +20,7 @@ from .const import (
     DOMAIN,
     MOVE_DURATION_OPTION_PREFIX,
 )
-from .helpers import iter_devices
+from .helpers import command_error_message, iter_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -283,9 +284,17 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._attr_is_opening = False
         self._attr_is_closing = False
         self.async_write_ha_state()
-        await self._send_command(
-            [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
-        )
+        try:
+            await self._send_command(
+                [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
+            )
+        except HomeAssistantError:
+            # The door is still moving - we cancelled the local animation
+            # but the stop never landed. Drop the optimistic override so
+            # the next poll's real position wins immediately.
+            self._clear_optimistic_state()
+            self.async_write_ha_state()
+            raise
         self.coordinator.trigger_fast_poll()
 
     async def async_set_cover_position(self, **kwargs) -> None:
@@ -315,9 +324,20 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         # Track calibration if this is a full-range move.
         self._start_calibration_if_full_traversal(start, pos)
 
-        await self._send_command(
-            [{"key": COMMAND_POSITION, "value": pos}]
-        )
+        try:
+            await self._send_command(
+                [{"key": COMMAND_POSITION, "value": pos}]
+            )
+        except HomeAssistantError:
+            # The command never reached the device. Drop the optimistic
+            # write immediately instead of leaving the card claiming
+            # "Opening" until the next poll happens to clear it - when
+            # the cause is an API throttle that poll may itself be
+            # rejected, stretching a lie across several scan intervals.
+            self._calibration_pending = None
+            self._clear_optimistic_state()
+            self.async_write_ha_state()
+            raise
 
         duration = self._move_duration_seconds()
         self._move_task = self.hass.async_create_task(
@@ -336,17 +356,29 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         await super().async_will_remove_from_hass()
 
     async def _send_command(self, commands: list[dict]) -> None:
-        """Send a set_command for this device, surfacing failures to HA."""
+        """Send a set_command for this device, surfacing failures to HA.
+
+        The catch covers transport errors as well as SmartSlydrApiError.
+        It used to catch only the latter, which meant an HTTP-level
+        rejection - a 429 from the upstream throttle being the case that
+        bit a user in the wild - raised a raw aiohttp.ClientResponseError
+        straight out of the service call, with no rollback of the
+        optimistic state the caller had already written.
+        """
         try:
             await self._client.set_command(
                 [{"device_id": self._device_id, "commands": commands}]
             )
-        except SmartSlydrApiError as err:
+        except (
+            SmartSlydrApiError,
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            OSError,
+        ) as err:
             _LOGGER.warning(
-                "SmartSlydr set_command failed for %s: %s",
+                "SmartSlydr set_command failed for %s (%s): %s",
                 self._device_id,
+                type(err).__name__,
                 err,
             )
-            raise HomeAssistantError(
-                f"SmartSlydr command failed: {err}"
-            ) from err
+            raise HomeAssistantError(command_error_message(err)) from err

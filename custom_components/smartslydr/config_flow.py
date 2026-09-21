@@ -11,7 +11,11 @@ from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api_client import SmartSlydrApiClient, SmartSlydrAuthError
+from .api_client import (
+    SmartSlydrApiClient,
+    SmartSlydrAuthError,
+    SmartSlydrRateLimitError,
+)
 from .const import (
     CONF_BASE_URL,
     CONF_PASSWORD,
@@ -19,6 +23,7 @@ from .const import (
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MIN_SCAN_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,6 +45,12 @@ class SmartSlydrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await client.authenticate()
         except SmartSlydrAuthError:
             return "auth_failed"
+        except SmartSlydrRateLimitError as err:
+            # Caught before ClientResponseError: a 429 during setup means
+            # the account is being throttled (often by an existing entry
+            # polling too fast), not that the API is unreachable.
+            _LOGGER.error("SmartSlydr auth rate-limited: %s", err)
+            return "rate_limited"
         except aiohttp.ClientResponseError as err:
             _LOGGER.error("SmartSlydr auth HTTP error: %s", err)
             return "cannot_connect"
@@ -136,7 +147,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_SCAN_INTERVAL,
                 default=self._config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-            ): vol.All(int, vol.Range(min=10, max=3600)),
+            ): vol.All(int, vol.Range(min=MIN_SCAN_INTERVAL, max=3600)),
             vol.Optional(
                 CONF_BASE_URL,
                 default=self._config_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),

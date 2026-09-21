@@ -93,8 +93,11 @@ The button above starts the config flow on your instance. Or do it manually:
    and **password**.
 3. (Optional) Adjust the **Scan Interval** under
    **Settings → Devices & Services → Lychee Things → Configure**. Default is
-   300 seconds. Lower values poll the cloud API more often; the SmartSlydr
-   API has no published rate limit but a sensible minimum is ~30 seconds.
+   300 seconds, minimum 30. Lower values poll the cloud API more often. The
+   SmartSlydr API publishes no rate limit, but AWS API Gateway enforces an
+   undocumented per-account throttle — see
+   [Rate limiting](#the-door-stops-responding-to-openclose-but-everything-looks-online)
+   below for why going low is riskier than it looks.
 
 A given email can only be added once — the config flow rejects duplicate
 entries.
@@ -177,6 +180,39 @@ auto-clears it once the API recovers. Check whether the LycheeThings mobile
 app can still see your devices; if it can, the public REST API has regressed
 and is worth reporting to SmartSlydr support. No manual action is needed on
 the HA side — the next successful poll restores normal operation.
+
+### The door stops responding to open/close but everything looks online
+
+Symptom: the integration and its entities show as available, sensors keep
+updating, the door works from the physical remote and the LycheeThings app —
+but `cover.open_cover` / `cover.close_cover` from Home Assistant do nothing.
+
+Check **Settings → System → Logs** for:
+
+```text
+Failed to fetch petpass states on N consecutive poll(s) ... 429
+SmartSlydr has rate-limited this account on 5 consecutive polls
+```
+
+AWS API Gateway enforces an undocumented per-account request throttle in
+front of the SmartSlydr backend, and **reads and writes share the same
+quota**. Once polling exhausts it, `/operation/get` (the petpass state read)
+*and* `/operation` (your open/close commands) both start returning HTTP 429.
+Because `/devices` is throttled separately and usually keeps working, the
+integration goes on reporting healthy while every command is being rejected.
+
+A sustained throttle is almost always a scan interval set too low. Each poll
+costs two requests, so 10 seconds is roughly 24× the request rate of the
+300-second default and reliably trips the limit.
+
+**Fix:** raise the **Scan Interval** under **Configure** (300 is the default,
+30 the enforced minimum), then wait a few minutes for the limit to reset.
+Values below 30 seconds stored by older versions of this integration are
+clamped at startup, with a warning in the log.
+
+The integration raises a **"SmartSlydr is rate-limiting this account"** repair
+card after five consecutive throttled polls and clears it once a poll gets
+through.
 
 ### `auth_failed` when adding the integration
 

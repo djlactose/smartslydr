@@ -17,6 +17,24 @@ SERVICE_RECALIBRATE_COVER = "recalibrate_cover"
 # Default scan interval (in seconds) for polling device data
 DEFAULT_SCAN_INTERVAL = 300
 
+# Floor for the user-configurable scan interval.
+#
+# Every poll costs two upstream requests (/devices + /operation/get), and
+# /operation/get fans out one command entry per device. The AWS API
+# Gateway in front of the SmartSlydr backend enforces an undocumented
+# per-account throttle: a sustained ~10s cadence returns HTTP 429 on
+# essentially every /operation/get call, and because writes (/operation)
+# share that throttle, the user's own open/close commands get rejected
+# alongside the polling. That is not a recoverable state - it persists
+# for as long as the polling continues.
+#
+# The options flow used to accept a 10s minimum, which let a user
+# configure exactly that failure. 30s is the value the README has always
+# recommended and leaves headroom for the 10s fast-poll burst after a
+# command (see FAST_POLL_INTERVAL_S in __init__.py), which is bounded to
+# 30 seconds and so can't drain the quota on its own.
+MIN_SCAN_INTERVAL = 30
+
 # Default upstream API base. Overridable per-entry via the options flow
 # so a future LycheeThings domain rotation, or a local proxy for
 # debugging, doesn't require a code change.

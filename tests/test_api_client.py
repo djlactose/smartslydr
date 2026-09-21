@@ -16,6 +16,7 @@ from custom_components.smartslydr.api_client import (
     SmartSlydrApiClient,
     SmartSlydrApiError,
     SmartSlydrAuthError,
+    SmartSlydrRateLimitError,
     _redact,
     _raise_if_upstream_error,
 )
@@ -285,3 +286,144 @@ async def test_concurrent_ensure_token_collapses_to_one_auth(
             for call in calls
         ]
         assert len(auth_calls) == 1
+
+
+# ---------------------------------------------------------------------
+# Rate limiting (HTTP 429)
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_devices_429_raises_rate_limit_error(
+    session: ClientSession,
+) -> None:
+    """A 429 must surface as SmartSlydrRateLimitError, not a raw aiohttp error.
+
+    Regression: the coordinator and both entity platforms only understood
+    SmartSlydrApiError, so an HTTP-level throttle rejection escaped every
+    handler - as an "unreachable backend" repair card on the poll path,
+    and as a bare ClientResponseError out of the service call on the
+    command path.
+    """
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.get(f"{BASE}/devices", status=429)
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(SmartSlydrRateLimitError):
+            await client.get_devices()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_error_is_an_api_error(session: ClientSession) -> None:
+    """Existing `except SmartSlydrApiError` handlers must still catch it."""
+    assert issubclass(SmartSlydrRateLimitError, SmartSlydrApiError)
+
+
+@pytest.mark.asyncio
+async def test_get_devices_429_is_not_retried(
+    session: ClientSession, monkeypatch
+) -> None:
+    """Retrying a throttle rejection would only deepen the hole."""
+
+    async def _no_sleep(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.get(f"{BASE}/devices", status=429)
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(SmartSlydrRateLimitError):
+            await client.get_devices()
+        device_calls = [
+            call
+            for (method, url), calls in m.requests.items()
+            if method == "GET" and str(url).endswith("/devices")
+            for call in calls
+        ]
+        assert len(device_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_status_429_raises_rate_limit_error(
+    session: ClientSession,
+) -> None:
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.post(f"{BASE}/operation/get", status=429)
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(SmartSlydrRateLimitError):
+            await client.get_status([{"device_id": "x", "command": "petpass"}])
+
+
+@pytest.mark.asyncio
+async def test_set_command_429_raises_rate_limit_error(
+    session: ClientSession,
+) -> None:
+    """The write path shares the read path's quota, so it throttles too."""
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.post(f"{BASE}/operation", status=429)
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(SmartSlydrRateLimitError):
+            await client.set_command([{"device_id": "x", "commands": []}])
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_message_includes_retry_after(
+    session: ClientSession,
+) -> None:
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.get(f"{BASE}/devices", status=429, headers={"Retry-After": "120"})
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(SmartSlydrRateLimitError) as excinfo:
+            await client.get_devices()
+        assert "120" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------
+# Non-JSON error bodies
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_html_error_body_surfaces_http_error_not_json_error(
+    session: ClientSession,
+) -> None:
+    """API Gateway/CloudFront serve HTML for some errors.
+
+    The body was parsed before the status was checked, so those responses
+    raised JSONDecodeError - a type no caller handles - instead of the
+    HTTP error the caller can actually act on.
+    """
+    import aiohttp
+
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.get(
+            f"{BASE}/devices",
+            status=403,
+            body="<html><body>Forbidden</body></html>",
+            content_type="text/html",
+        )
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(aiohttp.ClientResponseError):
+            await client.get_devices()
+
+
+@pytest.mark.asyncio
+async def test_html_429_body_still_maps_to_rate_limit_error(
+    session: ClientSession,
+) -> None:
+    with aioresponses() as m:
+        m.post(f"{BASE}/auth", payload={"access_token": "tok"})
+        m.get(
+            f"{BASE}/devices",
+            status=429,
+            body="<html><body>Too Many Requests</body></html>",
+            content_type="text/html",
+        )
+        client = SmartSlydrApiClient("u", "p", session, base_url=BASE)
+        with pytest.raises(SmartSlydrRateLimitError):
+            await client.get_devices()

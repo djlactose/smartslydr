@@ -20,7 +20,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api_client import SmartSlydrApiClient, SmartSlydrApiError, SmartSlydrAuthError
+from .api_client import (
+    SmartSlydrApiClient,
+    SmartSlydrApiError,
+    SmartSlydrAuthError,
+    SmartSlydrRateLimitError,
+)
 from .const import (
     CALIBRATED_DURATION_OPTION_PREFIX,
     CONF_BASE_URL,
@@ -29,6 +34,7 @@ from .const import (
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MIN_SCAN_INTERVAL,
     PLATFORMS,
     SERVICE_RECALIBRATE_COVER,
 )
@@ -42,7 +48,25 @@ _LOGGER = logging.getLogger(__name__)
 
 ISSUE_UPSTREAM_UNEXPECTED = "upstream_unexpected_response"
 ISSUE_UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+ISSUE_RATE_LIMITED = "rate_limited"
+
+# Cleared by any successful /devices poll. ISSUE_RATE_LIMITED is
+# deliberately NOT in here: /devices and /operation/get are throttled
+# independently, so a working /devices poll says nothing about whether
+# we're still being rate-limited - and clearing the card on that basis is
+# exactly how a four-hour throttle stayed invisible.
 _TRANSIENT_ISSUES = (ISSUE_UPSTREAM_UNEXPECTED, ISSUE_UPSTREAM_UNAVAILABLE)
+
+# How many consecutive rate-limited polls before we raise the repair
+# card. A single 429 is a blip worth riding out silently; a run of them
+# is a configuration problem the user has to act on. Five polls is
+# ~2.5 minutes at the minimum scan interval.
+RATE_LIMIT_STRIKES = 5
+
+# Once the card is up, re-log at this interval (in polls) so a long
+# throttle leaves a trail without the 1176-identical-warnings problem
+# that made the original report so hard to read.
+RATE_LIMIT_LOG_EVERY = 50
 
 
 def _create_issue(hass: HomeAssistant, key: str) -> None:
@@ -85,6 +109,13 @@ class SmartSlydrCoordinator(DataUpdateCoordinator):
         super().__init__(hass, **kwargs)
         self._default_interval = default_interval
         self._restore_handle = None
+        # Consecutive polls rejected with HTTP 429, from either endpoint.
+        # Drives the rate-limit repair card and its log throttling.
+        self.rate_limit_strikes = 0
+        # Consecutive non-429 /operation/get failures. Tracked separately
+        # only so the warning that used to fire on every poll can be
+        # throttled the same way.
+        self.petpass_failures = 0
 
     @callback
     def trigger_fast_poll(self) -> None:
@@ -107,6 +138,33 @@ class SmartSlydrCoordinator(DataUpdateCoordinator):
         self.update_interval = self._default_interval
 
 
+def _resolve_scan_interval(entry: ConfigEntry) -> int:
+    """Return the entry's scan interval, clamped to MIN_SCAN_INTERVAL."""
+    configured = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    try:
+        seconds = int(configured)
+    except (TypeError, ValueError):
+        _LOGGER.warning(
+            "Ignoring non-numeric scan_interval %r; using %ds",
+            configured,
+            DEFAULT_SCAN_INTERVAL,
+        )
+        return DEFAULT_SCAN_INTERVAL
+    if seconds < MIN_SCAN_INTERVAL:
+        _LOGGER.warning(
+            "Configured scan interval of %ds is below the %ds minimum and "
+            "would get this account rate-limited by the SmartSlydr API "
+            "(which would also start rejecting open/close commands). "
+            "Polling at %ds instead - update the value in the "
+            "integration's options to silence this warning",
+            seconds,
+            MIN_SCAN_INTERVAL,
+            MIN_SCAN_INTERVAL,
+        )
+        return MIN_SCAN_INTERVAL
+    return seconds
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
@@ -117,7 +175,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     hass.data.setdefault(DOMAIN, {})
 
-    scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    # Clamp rather than trust the stored value. The options flow used to
+    # accept a 10s minimum, so entries configured under the old schema
+    # still carry sub-floor values and would otherwise keep polling at a
+    # rate that gets the account throttled. Re-validating here also
+    # covers options edited directly in core.config_entries.
+    scan_interval = _resolve_scan_interval(entry)
+
+    @callback
+    def _note_rate_limit(err: Exception) -> None:
+        """Record a throttled poll, escalating once it stops being a blip.
+
+        Logging is throttled deliberately. The previous code logged one
+        warning per failed poll, which on a real report meant 1176
+        identical lines in four hours - enough noise to bury the two
+        lines that actually explained the outage.
+        """
+        coordinator.rate_limit_strikes += 1
+        strikes = coordinator.rate_limit_strikes
+        if strikes < RATE_LIMIT_STRIKES:
+            _LOGGER.debug("SmartSlydr rate-limited (strike %d): %s", strikes, err)
+            return
+        if strikes == RATE_LIMIT_STRIKES:
+            _LOGGER.warning(
+                "SmartSlydr has rate-limited this account on %d consecutive "
+                "polls (scan interval %ds). Open/close commands share the "
+                "same quota and are likely being rejected too. Raise the "
+                "scan interval in the integration's options: %s",
+                strikes,
+                scan_interval,
+                err,
+            )
+            _create_issue(hass, ISSUE_RATE_LIMITED)
+            return
+        if strikes % RATE_LIMIT_LOG_EVERY == 0:
+            _LOGGER.warning(
+                "SmartSlydr is still rate-limiting this account "
+                "(%d consecutive polls): %s",
+                strikes,
+                err,
+            )
+
+    @callback
+    def _clear_rate_limit() -> None:
+        if coordinator.rate_limit_strikes:
+            if coordinator.rate_limit_strikes >= RATE_LIMIT_STRIKES:
+                _LOGGER.info(
+                    "SmartSlydr rate limit cleared after %d throttled polls",
+                    coordinator.rate_limit_strikes,
+                )
+            coordinator.rate_limit_strikes = 0
+        ir.async_delete_issue(hass, DOMAIN, ISSUE_RATE_LIMITED)
+
+    @callback
+    def _note_petpass_failure(err: Exception) -> None:
+        """Log a non-throttle /operation/get failure, with the same throttling."""
+        coordinator.petpass_failures += 1
+        failures = coordinator.petpass_failures
+        if failures == 1 or failures % RATE_LIMIT_LOG_EVERY == 0:
+            _LOGGER.warning(
+                "Failed to fetch petpass states on %d consecutive poll(s) "
+                "(keeping last known): %s",
+                failures,
+                err,
+            )
+        else:
+            _LOGGER.debug("Failed to fetch petpass states (attempt %d): %s", failures, err)
 
     async def _async_update_data():
         try:
@@ -127,6 +250,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             # the integration page). User re-enters the password without
             # losing entity history.
             raise ConfigEntryAuthFailed(str(err)) from err
+        except SmartSlydrRateLimitError as err:
+            # Caught ahead of SmartSlydrApiError (its parent) so the user
+            # gets the rate-limit card, which tells them to raise the
+            # scan interval, rather than one blaming the backend.
+            _note_rate_limit(err)
+            raise UpdateFailed(str(err)) from err
         except SmartSlydrApiError as err:
             # SmartSlydrApiError messages are sanitized at construction
             # (no upstream payload echo), safe to surface. Also signal a
@@ -178,16 +307,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         prev = coordinator.data
         prev_petpass = prev.petpass_states if prev is not None else {}
         petpass_states: dict[str, bool] = dict(prev_petpass)
+        rate_limited = False
         if device_ids:
             commands = [{"device_id": did, "command": "petpass"} for did in device_ids]
             try:
                 statuses = await client.get_status(commands)
+            except SmartSlydrRateLimitError as err:
+                # Keep the last-known states (see above), but unlike any
+                # other failure here this one has to escalate: being
+                # throttled on /operation/get means writes to /operation
+                # are being rejected too, so the user's open/close
+                # commands are silently failing while the integration
+                # otherwise looks perfectly healthy.
+                _note_rate_limit(err)
+                rate_limited = True
             except Exception as err:
-                _LOGGER.warning(
-                    "Failed to fetch petpass states (keeping last known): %s",
-                    err,
-                )
+                _note_petpass_failure(err)
             else:
+                coordinator.petpass_failures = 0
                 # Success: replace with fresh values rather than merging,
                 # so a removed device drops out cleanly.
                 petpass_states = {}
@@ -210,6 +347,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                             petpass_states[did] = prev_petpass[did]
                         continue
                     petpass_states[did] = parsed
+
+        # This poll got through without a throttle rejection, so retire
+        # the strike count and the card. Done at the end of the poll
+        # rather than off the back of a successful /devices call: the two
+        # endpoints are throttled independently, and clearing on /devices
+        # alone is what let a sustained /operation/get throttle keep
+        # presenting as a healthy integration.
+        if not rate_limited:
+            _clear_rate_limit()
 
         return SmartSlydrCoordinatorData(rooms=rooms, petpass_states=petpass_states)
 
