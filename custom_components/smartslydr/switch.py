@@ -54,6 +54,14 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         # timeout fires (silent write failure).
         self._optimistic_baseline: bool | None = None
         self._optimistic_until: float | None = None
+        # The optimistic value itself. Deliberately not _attr_is_on:
+        # ToggleEntity builds _attr_is_on as a CachedProperties descriptor
+        # backed by a private "__attr_is_on" slot, so assigning it never
+        # lands in self.__dict__ under that name. The old
+        # `"_attr_is_on" in self.__dict__` guard was therefore always
+        # False and the pop always a no-op - the optimistic write never
+        # reached the UI at all.
+        self._optimistic_is_on: bool | None = None
 
         self._attr_unique_id = f"{self._device_id}_petpass"
 
@@ -73,8 +81,8 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        if "_attr_is_on" in self.__dict__:
-            return bool(self.__dict__["_attr_is_on"])
+        if self._optimistic_is_on is not None:
+            return self._optimistic_is_on
         return self._polled_is_on()
 
     def _polled_is_on(self) -> bool:
@@ -97,14 +105,14 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         # the case where the write succeeded but the backend hasn't
         # propagated yet, and dropping the override flips the toggle
         # back to its pre-write state.
-        if "_attr_is_on" in self.__dict__ and self._optimistic_baseline is not None:
+        if self._optimistic_is_on is not None and self._optimistic_baseline is not None:
             polled = self._polled_is_on()
             timed_out = (
                 self._optimistic_until is not None
                 and time.monotonic() >= self._optimistic_until
             )
             if polled != self._optimistic_baseline or timed_out:
-                self.__dict__.pop("_attr_is_on", None)
+                self._optimistic_is_on = None
                 self._optimistic_baseline = None
                 self._optimistic_until = None
         super()._handle_coordinator_update()
@@ -125,7 +133,7 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
         # Capture the polled value as it stood BEFORE this write so the
         # update handler can detect when the backend has propagated.
         self._optimistic_baseline = self._polled_is_on()
-        self._attr_is_on = bool(value)
+        self._optimistic_is_on = bool(value)
         self._optimistic_until = time.monotonic() + _OPTIMISTIC_SAFETY_TIMEOUT_S
         self.async_write_ha_state()
         try:
@@ -147,7 +155,7 @@ class SmartSlydrPetpassSwitch(CoordinatorEntity, SwitchEntity):
             # entirely: the toggle kept showing the requested state for
             # the full _OPTIMISTIC_SAFETY_TIMEOUT_S while the raw aiohttp
             # error escaped the service call.
-            self.__dict__.pop("_attr_is_on", None)
+            self._optimistic_is_on = None
             self._optimistic_baseline = None
             self._optimistic_until = None
             self.async_write_ha_state()

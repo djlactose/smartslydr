@@ -9,6 +9,7 @@ optimistic state that had already been written to the UI.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
@@ -25,6 +26,7 @@ from custom_components.smartslydr.const import (
     CONF_USERNAME,
     DOMAIN,
 )
+from custom_components.smartslydr.cover import _TICK_INTERVAL
 
 ROOMS = [
     {
@@ -80,6 +82,15 @@ async def _setup(hass: HomeAssistant, set_command: AsyncMock):
             # doesn't leave a lingering timer for the next test.
             await hass.config_entries.async_unload(entry.entry_id)
             await hass.async_block_till_done()
+
+
+def _polled_position() -> int:
+    """The position /devices reports, i.e. what the entity shows with no override.
+
+    ROOMS is the payload get_devices returns and nothing here mutates it,
+    so this is the value an override has to differ from to prove it's live.
+    """
+    return ROOMS[0]["device_list"][0]["position"]
 
 
 def _entity_id(hass: HomeAssistant, domain: str, unique_id: str) -> str:
@@ -180,3 +191,68 @@ async def test_successful_cover_command_is_unaffected(
             "cover", "close_cover", {"entity_id": entity_id}, blocking=True
         )
         assert set_command.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_cover_command_shows_optimistic_motion(
+    hass: HomeAssistant,
+) -> None:
+    """The optimistic write has to actually reach the state machine.
+
+    It did not, for the entire life of the feature: the override was
+    stashed via `self._attr_current_cover_position = ...`, but CoverEntity
+    is built with HA's CachedProperties metaclass, so that name is a
+    descriptor writing to a private "__attr_*" slot. The
+    `"_attr_current_cover_position" in self.__dict__` guard that gated the
+    override was therefore always False, and the cover only ever showed
+    the last polled position - no optimistic response, no animation.
+
+    Asserting the *visible* state is the point here. A test that only
+    checks set_command was called passes either way.
+    """
+    set_command = AsyncMock(return_value=[])
+    async with _setup(hass, set_command):
+        entity_id = _entity_id(hass, "cover", "dev1_cover")
+        await hass.services.async_call(
+            "cover", "close_cover", {"entity_id": entity_id}, blocking=True
+        )
+        # Motion is signalled immediately, before any poll confirms it.
+        assert hass.states.get(entity_id).state == "closing"
+
+        # Then the interpolation has to actually move the reported
+        # position. Asserting the baseline here instead would prove
+        # nothing: the optimistic baseline and the polled value are both
+        # 100, so a dead override reads identically. Only a position that
+        # has moved off 100 while /devices still says 100 shows the
+        # override is live.
+        #
+        # _animate_to ticks on asyncio.sleep(_TICK_INTERVAL) rather than
+        # HA's clock helpers, so async_fire_time_changed can't drive it -
+        # this waits out one real tick. Closing 100 -> 0 over the 10s
+        # default puts the second tick near 95.
+        await asyncio.sleep(_TICK_INTERVAL * 2)
+        moved = hass.states.get(entity_id)
+        assert moved.attributes["current_position"] < _polled_position()
+
+
+@pytest.mark.asyncio
+async def test_successful_petpass_command_holds_optimistic_state(
+    hass: HomeAssistant,
+) -> None:
+    """Same bug, same shape, on the switch.
+
+    `_attr_is_on` is a CachedProperties descriptor inherited from
+    ToggleEntity, so the optimistic value never landed in __dict__ and
+    is_on always fell through to the polled value. The polled value here
+    stays "off" for the whole test, so a working optimistic hold is the
+    only thing that can make this read "on".
+    """
+    set_command = AsyncMock(return_value=[])
+    async with _setup(hass, set_command):
+        entity_id = _entity_id(hass, "switch", "dev1_petpass")
+        assert hass.states.get(entity_id).state == "off"
+
+        await hass.services.async_call(
+            "switch", "turn_on", {"entity_id": entity_id}, blocking=True
+        )
+        assert hass.states.get(entity_id).state == "on"

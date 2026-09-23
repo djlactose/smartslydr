@@ -83,6 +83,18 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._client = client
         self._last_set_position_at: float = 0.0
         self._move_task: asyncio.Task | None = None
+        # Locally-held position that overrides the polled value while a
+        # command is in flight (optimistic write, then interpolation).
+        #
+        # This deliberately does NOT reuse _attr_current_cover_position.
+        # CoverEntity is built with HA's CachedProperties metaclass, which
+        # turns every _attr_* name into a property descriptor backed by a
+        # private "__attr_*" slot. Assigning self._attr_current_cover_position
+        # therefore never lands in self.__dict__ under that name, so the
+        # old `"_attr_current_cover_position" in self.__dict__` guard was
+        # always False and `self.__dict__.pop(...)` always a no-op - the
+        # optimistic position and the whole animation never reached the UI.
+        self._optimistic_position: int | None = None
         # Tracks an in-flight calibration attempt. Populated only on
         # full-range moves (0->100 or 100->0); cleared on success,
         # interruption, or timeout.
@@ -110,11 +122,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
 
     @property
     def current_cover_position(self) -> int:
-        # _attr_current_cover_position takes precedence when set as an
-        # instance attribute (optimistic write or live interpolation);
-        # fall through to the last polled value otherwise.
-        if "_attr_current_cover_position" in self.__dict__:
-            return self.__dict__["_attr_current_cover_position"]
+        # The optimistic override takes precedence while a command is in
+        # flight (optimistic write or live interpolation); fall through
+        # to the last polled value otherwise.
+        if self._optimistic_position is not None:
+            return self._optimistic_position
         return int(self._device_data().get("position", 0) or 0)
 
     @property
@@ -146,13 +158,16 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         return DEFAULT_MOVE_DURATION
 
     def _clear_optimistic_state(self) -> None:
-        """Drop optimistic overrides so the coordinator value takes over."""
-        for attr in (
-            "_attr_current_cover_position",
-            "_attr_is_opening",
-            "_attr_is_closing",
-        ):
-            self.__dict__.pop(attr, None)
+        """Drop optimistic overrides so the coordinator value takes over.
+
+        is_opening/is_closing are assigned False rather than deleted:
+        _attr_is_opening and _attr_is_closing are CachedProperties
+        descriptors, so there is no instance-dict entry to remove, and
+        the assignment is what actually invalidates HA's cached value.
+        """
+        self._optimistic_position = None
+        self._attr_is_opening = False
+        self._attr_is_closing = False
 
     def _cancel_move_task(self) -> None:
         if self._move_task and not self._move_task.done():
@@ -177,11 +192,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
                     break
                 progress = elapsed / duration
                 current = round(start + (target - start) * progress)
-                self._attr_current_cover_position = current
+                self._optimistic_position = current
                 self.async_write_ha_state()
                 await asyncio.sleep(_TICK_INTERVAL)
             # Normal completion - snap to target and stop signaling motion.
-            self._attr_current_cover_position = target
+            self._optimistic_position = target
             self._attr_is_opening = False
             self._attr_is_closing = False
             self.async_write_ha_state()
@@ -253,7 +268,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         if self._move_task and not self._move_task.done():
             # Animation is running. Reconcile if it has drifted from
             # truth; otherwise let it keep ticking.
-            estimated = self.__dict__.get("_attr_current_cover_position", polled)
+            estimated = (
+                self._optimistic_position
+                if self._optimistic_position is not None
+                else polled
+            )
             if abs(polled - estimated) > _RECONCILE_DRIFT:
                 _LOGGER.debug(
                     "Cover %s interpolation drift %d -> %d, snapping",
@@ -262,7 +281,10 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
                     polled,
                 )
                 self._cancel_move_task()
-                self._attr_current_cover_position = polled
+                # Dropping the override *is* the snap to polled truth, and
+                # it keeps later polls authoritative instead of pinning to
+                # this one.
+                self._optimistic_position = None
         else:
             # No animation - drop optimistic overrides; coordinator wins.
             self._clear_optimistic_state()
@@ -316,7 +338,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         # then ticks the position toward `pos`; real state lands on the
         # next (fast-poll) coordinator refresh.
         start = self.current_cover_position
-        self._attr_current_cover_position = start  # baseline
+        self._optimistic_position = start  # baseline
         self._attr_is_opening = pos > start
         self._attr_is_closing = pos < start
         self.async_write_ha_state()
