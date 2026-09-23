@@ -20,6 +20,7 @@
         "error": {
             "auth_failed": "Invalid email or password.",
             "cannot_connect": "Unable to reach the SmartSlydr API.",
+            "rate_limited": "SmartSlydr is rate-limiting this account (HTTP 429). If you already have this integration set up, its scan interval may be too low. Wait a few minutes and try again.",
             "unknown": "Unexpected response from SmartSlydr."
         },
         "abort": {
@@ -36,7 +37,7 @@
                     "base_url": "API base URL"
                 },
                 "data_description": {
-                    "scan_interval": "How often to poll the SmartSlydr API. Range: 10–3600 seconds.",
+                    "scan_interval": "How often to poll the SmartSlydr API. Range: 30–3600 seconds, default 300. Each poll costs two API requests, and polling too often gets the account rate-limited — which also causes open/close commands to be rejected. Lower this only if you need faster state updates, and raise it again if you see rate-limit warnings.",
                     "base_url": "Override only if SmartSlydr publishes a new endpoint or you need a local proxy."
                 }
             }
@@ -49,11 +50,29 @@
                 "step": {
                     "confirm": {
                         "title": "Retry SmartSlydr connection",
-                        "description": "The SmartSlydr API returned a payload the integration didn't recognize. This is usually a server-side issue with the LycheeThings backend, not your account or your Home Assistant setup, and recovers automatically once the API is restored. If the LycheeThings mobile app can also no longer see your devices, please report the outage to SmartSlydr support.\n\nClick Submit to retry the API now. If the backend is reachable, this notice will clear automatically."
+                        "description": "The SmartSlydr API returned a payload the integration didn't recognize — most often an upstream timeout. There are two common causes, and it's worth ruling out the first before reporting the second:\n\n1. **The integration is polling too often.** A low scan interval can push the backend past its limits and make it time out. Open **Configure** on the integration page and check the scan interval; the default is 300 seconds, and anything below 60 is worth raising.\n2. **A genuine backend problem.** If the LycheeThings mobile app also can't see your devices, the outage is upstream and worth reporting to SmartSlydr support.\n\nClick Submit to retry the API now. If it responds, this notice will clear automatically."
                     },
                     "confirm_with_reset": {
                         "title": "Retry SmartSlydr connection",
-                        "description": "The SmartSlydr API returned a payload the integration didn't recognize. This is usually a server-side issue with the LycheeThings backend.\n\nThe integration is currently configured with a custom API base URL:\n\n- Current URL: {current_url}\n- Default URL: {default_url}\n\nClick Submit to retry. If you suspect the custom URL is the problem, toggle **Reset to default URL** below to revert it before retrying.",
+                        "description": "The SmartSlydr API returned a payload the integration didn't recognize — most often an upstream timeout. This can be a backend problem, but a scan interval set too low can also cause it; check **Configure** on the integration page before reporting an outage.\n\nThe integration is currently configured with a custom API base URL:\n\n- Current URL: {current_url}\n- Default URL: {default_url}\n\nClick Submit to retry. If you suspect the custom URL is the problem, toggle **Reset to default URL** below to revert it before retrying.",
+                        "data": {
+                            "reset_base_url": "Reset to default URL"
+                        }
+                    }
+                }
+            }
+        },
+        "rate_limited": {
+            "title": "SmartSlydr is rate-limiting this account",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Reduce SmartSlydr polling",
+                        "description": "The SmartSlydr API has rejected several polls in a row with HTTP 429 (Too Many Requests). This is **not** a backend outage — it means Home Assistant is calling the API more often than this account's quota allows.\n\nThis matters beyond stale readings: open and close commands share the same quota, so while the limit is in force your door may stop responding to Home Assistant entirely, even though the integration and its entities still look online here.\n\n**To fix it:** open **Configure** on the integration page and raise the **Scan interval**. The default is 300 seconds and the minimum is 30. Then give it a few minutes for the limit to reset.\n\nClick Submit to retry now. Once a poll gets through, this notice will clear automatically."
+                    },
+                    "confirm_with_reset": {
+                        "title": "Reduce SmartSlydr polling",
+                        "description": "The SmartSlydr API has rejected several polls in a row with HTTP 429 (Too Many Requests) — Home Assistant is calling it more often than this account's quota allows. Open and close commands share that quota, so your door may stop responding while the limit is in force.\n\nRaise the **Scan interval** under **Configure** on the integration page (default 300 seconds, minimum 30), then wait a few minutes.\n\nThe integration is also configured with a custom API base URL:\n\n- Current URL: {current_url}\n- Default URL: {default_url}\n\nClick Submit to retry. If you suspect the custom URL is the problem, toggle **Reset to default URL** below to revert it before retrying.",
                         "data": {
                             "reset_base_url": "Reset to default URL"
                         }

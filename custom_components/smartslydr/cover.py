@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 
+import aiohttp
 from homeassistant.components.cover import (
     CoverDeviceClass,
     CoverEntity,
@@ -19,7 +20,7 @@ from .const import (
     DOMAIN,
     MOVE_DURATION_OPTION_PREFIX,
 )
-from .helpers import iter_devices
+from .helpers import command_error_message, iter_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +83,18 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._client = client
         self._last_set_position_at: float = 0.0
         self._move_task: asyncio.Task | None = None
+        # Locally-held position that overrides the polled value while a
+        # command is in flight (optimistic write, then interpolation).
+        #
+        # This deliberately does NOT reuse _attr_current_cover_position.
+        # CoverEntity is built with HA's CachedProperties metaclass, which
+        # turns every _attr_* name into a property descriptor backed by a
+        # private "__attr_*" slot. Assigning self._attr_current_cover_position
+        # therefore never lands in self.__dict__ under that name, so the
+        # old `"_attr_current_cover_position" in self.__dict__` guard was
+        # always False and `self.__dict__.pop(...)` always a no-op - the
+        # optimistic position and the whole animation never reached the UI.
+        self._optimistic_position: int | None = None
         # Tracks an in-flight calibration attempt. Populated only on
         # full-range moves (0->100 or 100->0); cleared on success,
         # interruption, or timeout.
@@ -109,11 +122,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
 
     @property
     def current_cover_position(self) -> int:
-        # _attr_current_cover_position takes precedence when set as an
-        # instance attribute (optimistic write or live interpolation);
-        # fall through to the last polled value otherwise.
-        if "_attr_current_cover_position" in self.__dict__:
-            return self.__dict__["_attr_current_cover_position"]
+        # The optimistic override takes precedence while a command is in
+        # flight (optimistic write or live interpolation); fall through
+        # to the last polled value otherwise.
+        if self._optimistic_position is not None:
+            return self._optimistic_position
         return int(self._device_data().get("position", 0) or 0)
 
     @property
@@ -145,13 +158,16 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         return DEFAULT_MOVE_DURATION
 
     def _clear_optimistic_state(self) -> None:
-        """Drop optimistic overrides so the coordinator value takes over."""
-        for attr in (
-            "_attr_current_cover_position",
-            "_attr_is_opening",
-            "_attr_is_closing",
-        ):
-            self.__dict__.pop(attr, None)
+        """Drop optimistic overrides so the coordinator value takes over.
+
+        is_opening/is_closing are assigned False rather than deleted:
+        _attr_is_opening and _attr_is_closing are CachedProperties
+        descriptors, so there is no instance-dict entry to remove, and
+        the assignment is what actually invalidates HA's cached value.
+        """
+        self._optimistic_position = None
+        self._attr_is_opening = False
+        self._attr_is_closing = False
 
     def _cancel_move_task(self) -> None:
         if self._move_task and not self._move_task.done():
@@ -176,11 +192,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
                     break
                 progress = elapsed / duration
                 current = round(start + (target - start) * progress)
-                self._attr_current_cover_position = current
+                self._optimistic_position = current
                 self.async_write_ha_state()
                 await asyncio.sleep(_TICK_INTERVAL)
             # Normal completion - snap to target and stop signaling motion.
-            self._attr_current_cover_position = target
+            self._optimistic_position = target
             self._attr_is_opening = False
             self._attr_is_closing = False
             self.async_write_ha_state()
@@ -252,7 +268,11 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         if self._move_task and not self._move_task.done():
             # Animation is running. Reconcile if it has drifted from
             # truth; otherwise let it keep ticking.
-            estimated = self.__dict__.get("_attr_current_cover_position", polled)
+            estimated = (
+                self._optimistic_position
+                if self._optimistic_position is not None
+                else polled
+            )
             if abs(polled - estimated) > _RECONCILE_DRIFT:
                 _LOGGER.debug(
                     "Cover %s interpolation drift %d -> %d, snapping",
@@ -261,7 +281,10 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
                     polled,
                 )
                 self._cancel_move_task()
-                self._attr_current_cover_position = polled
+                # Dropping the override *is* the snap to polled truth, and
+                # it keeps later polls authoritative instead of pinning to
+                # this one.
+                self._optimistic_position = None
         else:
             # No animation - drop optimistic overrides; coordinator wins.
             self._clear_optimistic_state()
@@ -283,9 +306,17 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         self._attr_is_opening = False
         self._attr_is_closing = False
         self.async_write_ha_state()
-        await self._send_command(
-            [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
-        )
+        try:
+            await self._send_command(
+                [{"key": COMMAND_POSITION, "value": STOP_VALUE}]
+            )
+        except HomeAssistantError:
+            # The door is still moving - we cancelled the local animation
+            # but the stop never landed. Drop the optimistic override so
+            # the next poll's real position wins immediately.
+            self._clear_optimistic_state()
+            self.async_write_ha_state()
+            raise
         self.coordinator.trigger_fast_poll()
 
     async def async_set_cover_position(self, **kwargs) -> None:
@@ -307,7 +338,7 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         # then ticks the position toward `pos`; real state lands on the
         # next (fast-poll) coordinator refresh.
         start = self.current_cover_position
-        self._attr_current_cover_position = start  # baseline
+        self._optimistic_position = start  # baseline
         self._attr_is_opening = pos > start
         self._attr_is_closing = pos < start
         self.async_write_ha_state()
@@ -315,9 +346,20 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         # Track calibration if this is a full-range move.
         self._start_calibration_if_full_traversal(start, pos)
 
-        await self._send_command(
-            [{"key": COMMAND_POSITION, "value": pos}]
-        )
+        try:
+            await self._send_command(
+                [{"key": COMMAND_POSITION, "value": pos}]
+            )
+        except HomeAssistantError:
+            # The command never reached the device. Drop the optimistic
+            # write immediately instead of leaving the card claiming
+            # "Opening" until the next poll happens to clear it - when
+            # the cause is an API throttle that poll may itself be
+            # rejected, stretching a lie across several scan intervals.
+            self._calibration_pending = None
+            self._clear_optimistic_state()
+            self.async_write_ha_state()
+            raise
 
         duration = self._move_duration_seconds()
         self._move_task = self.hass.async_create_task(
@@ -336,17 +378,29 @@ class SmartSlydrCover(CoordinatorEntity, CoverEntity):
         await super().async_will_remove_from_hass()
 
     async def _send_command(self, commands: list[dict]) -> None:
-        """Send a set_command for this device, surfacing failures to HA."""
+        """Send a set_command for this device, surfacing failures to HA.
+
+        The catch covers transport errors as well as SmartSlydrApiError.
+        It used to catch only the latter, which meant an HTTP-level
+        rejection - a 429 from the upstream throttle being the case that
+        bit a user in the wild - raised a raw aiohttp.ClientResponseError
+        straight out of the service call, with no rollback of the
+        optimistic state the caller had already written.
+        """
         try:
             await self._client.set_command(
                 [{"device_id": self._device_id, "commands": commands}]
             )
-        except SmartSlydrApiError as err:
+        except (
+            SmartSlydrApiError,
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            OSError,
+        ) as err:
             _LOGGER.warning(
-                "SmartSlydr set_command failed for %s: %s",
+                "SmartSlydr set_command failed for %s (%s): %s",
                 self._device_id,
+                type(err).__name__,
                 err,
             )
-            raise HomeAssistantError(
-                f"SmartSlydr command failed: {err}"
-            ) from err
+            raise HomeAssistantError(command_error_message(err)) from err

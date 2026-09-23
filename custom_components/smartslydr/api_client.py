@@ -29,6 +29,57 @@ def _redact(body):
     return body
 
 
+async def _read_json(label: str, resp: aiohttp.ClientResponse):
+    """Parse a response body, tolerating non-JSON error pages.
+
+    API Gateway and CloudFront serve HTML (or an empty body) for some
+    throttle and gateway errors. ``resp.json()`` raises ValueError on
+    those, and because the body was read before the status check, that
+    ValueError used to escape every call path as a bare JSONDecodeError
+    instead of the HTTP error the caller could actually act on.
+
+    Returns None when the body isn't JSON; the caller checks the status
+    immediately afterwards, so a None body on an error response is
+    expected and harmless.
+    """
+    try:
+        return await resp.json(content_type=None)
+    except (aiohttp.ClientResponseError, ValueError):
+        # aiohttp has already cached the body, so .text() won't re-read
+        # the socket. Truncated because an HTML error page is long and
+        # the first line is the only informative part.
+        text = await resp.text()
+        _LOGGER.debug(
+            "[%s] HTTP %s body was not JSON: %.200s", label, resp.status, text
+        )
+        return None
+
+
+def _raise_for_status(label: str, resp: aiohttp.ClientResponse) -> None:
+    """``resp.raise_for_status()``, but map HTTP 429 to its own type.
+
+    A 429 is neither a backend fault nor a transport fault - it means we
+    are asking for data more often than the account's quota allows. It
+    needs a distinct type so that:
+
+    - the coordinator can raise a rate-limit repair card telling the user
+      to raise their scan interval, instead of a "backend unreachable"
+      card that points the blame upstream; and
+    - cover/switch can turn it into a readable HomeAssistantError instead
+      of leaking a raw aiohttp exception out of the service call.
+    """
+    try:
+        resp.raise_for_status()
+    except aiohttp.ClientResponseError as err:
+        if err.status == 429:
+            retry_after = resp.headers.get("Retry-After")
+            suffix = f"; upstream asked us to retry after {retry_after}s" if retry_after else ""
+            raise SmartSlydrRateLimitError(
+                f"SmartSlydr {label} was rate-limited by the API (HTTP 429){suffix}"
+            ) from err
+        raise
+
+
 def _raise_if_upstream_error(label: str, data) -> None:
     """Raise SmartSlydrApiError if the body looks like an upstream Lambda error.
 
@@ -76,10 +127,10 @@ class SmartSlydrApiClient:
         url = f"{self._base_url}/auth"
         payload = {"username": self._username, "password": self._password}
         async with self._session.post(url, json=payload) as resp:
-            body = await resp.json(content_type=None)
+            body = await _read_json("AUTH", resp)
             self._log_response("AUTH", resp.status, body)
             try:
-                resp.raise_for_status()
+                _raise_for_status("AUTH", resp)
             except aiohttp.ClientResponseError as err:
                 if err.status in (400, 401, 403):
                     raise SmartSlydrAuthError(
@@ -98,9 +149,9 @@ class SmartSlydrApiClient:
         url = f"{self._base_url}/token"
         payload = {"refresh_token": self._refresh_token_value}
         async with self._session.post(url, json=payload) as resp:
-            body = await resp.json(content_type=None)
+            body = await _read_json("REFRESH_TOKEN", resp)
             self._log_response("REFRESH_TOKEN", resp.status, body)
-            resp.raise_for_status()
+            _raise_for_status("REFRESH_TOKEN", resp)
         self._access_token = body["access_token"]
         self._token_expires = datetime.now(timezone.utc) + TOKEN_LIFETIME
 
@@ -148,6 +199,13 @@ class SmartSlydrApiClient:
                     except aiohttp.ClientResponseError as err:
                         _LOGGER.debug("Refresh token rejected (%s); re-authenticating", err.status)
                         self._refresh_token_value = None
+                    # A SmartSlydrRateLimitError deliberately propagates
+                    # here rather than falling through to authenticate().
+                    # Being throttled is not a sign the refresh token is
+                    # bad, and answering a 429 with a second request
+                    # against the same quota only deepens the hole. The
+                    # refresh token is left intact so the next poll can
+                    # retry it once the throttle clears.
                 await self.authenticate()
 
     async def get_devices(self):
@@ -158,9 +216,9 @@ class SmartSlydrApiClient:
             async with self._session.get(
                 f"{self._base_url}/devices", headers=headers
             ) as resp:
-                body = await resp.json(content_type=None)
+                body = await _read_json("GET_DEVICES", resp)
                 self._log_response("GET_DEVICES", resp.status, body)
-                resp.raise_for_status()
+                _raise_for_status("GET_DEVICES", resp)
             return body
 
         data = await self._request_with_retry("GET_DEVICES", _do_request)
@@ -188,9 +246,9 @@ class SmartSlydrApiClient:
             async with self._session.post(
                 f"{self._base_url}/operation/get", json=payload, headers=headers
             ) as resp:
-                body = await resp.json(content_type=None)
+                body = await _read_json("GET_STATUS", resp)
                 self._log_response("GET_STATUS", resp.status, body)
-                resp.raise_for_status()
+                _raise_for_status("GET_STATUS", resp)
             return body
 
         data = await self._request_with_retry("GET_STATUS", _do_request)
@@ -206,9 +264,9 @@ class SmartSlydrApiClient:
         async with self._session.post(
             f"{self._base_url}/operation", json=payload, headers=headers
         ) as resp:
-            data = await resp.json(content_type=None)
+            data = await _read_json("SET_COMMAND", resp)
             self._log_response("SET_COMMAND", resp.status, data)
-            resp.raise_for_status()
+            _raise_for_status("SET_COMMAND", resp)
         _raise_if_upstream_error("SET_COMMAND", data)
         if not isinstance(data, dict):
             return []
@@ -224,4 +282,19 @@ class SmartSlydrAuthError(SmartSlydrApiError):
 
     Distinguished from a generic API error so the coordinator can map it
     to ConfigEntryAuthFailed and trigger HA's reauth flow.
+    """
+
+
+class SmartSlydrRateLimitError(SmartSlydrApiError):
+    """Raised when the upstream API rejects a request with HTTP 429.
+
+    Distinguished from a generic API error because the cause, the blame
+    and the remedy are all different: nothing upstream is broken, the
+    integration is simply polling faster than the account's quota
+    allows, and the fix is a larger scan interval rather than waiting
+    for a backend recovery.
+
+    Subclasses SmartSlydrApiError so existing ``except
+    SmartSlydrApiError`` handlers keep working; handlers that want the
+    rate-limit-specific message catch this first.
     """
